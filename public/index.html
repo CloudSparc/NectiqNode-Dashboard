@@ -95,6 +95,28 @@
       }
     });
   </script>
+  <script>
+  async function getToken() {
+    // Using Netlify Identity widget (gotrue). Ensure widget is initialized on your page.
+    // window.netlifyIdentity must be available.
+    const user = window.netlifyIdentity?.currentUser();
+    if (!user) return null;
+    return await user.jwt();
+  }
+
+  export async function apiFetch(path, options = {}) {
+    const token = await getToken();
+    const headers = { ...(options.headers || {}), "Content-Type": "application/json" };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const res = await fetch(path, { ...options, headers });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    return res.json();
+  }
+
+  // Example usage:
+  // apiFetch("/api/whoami").then(console.log).catch(console.error);
+</script>
+
 </head>
 
 <body>
