@@ -93,6 +93,23 @@
       } else {
         start();
       }
+
+      async function refreshDevices() {
+  try {
+    const res = await apiFetch("/api/devices");
+    const select = document.getElementById("deviceSelect");
+    select.innerHTML = "";
+    (res.devices || []).forEach(d => {
+      const opt = document.createElement("option");
+      opt.value = d.device_id;
+      opt.textContent = d.name;
+      select.appendChild(opt);
+    });
+  } catch (e) {
+    console.error(e);
+  }
+}
+
     });
   </script>
   <script>
