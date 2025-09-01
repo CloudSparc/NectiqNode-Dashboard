@@ -40,36 +40,54 @@
     };
 
     /* ---------- 2) THEN WIRE IDENTITY ---------- */
-    (function waitForIdentity(cb) {
-      if (window.netlifyIdentity) return cb(window.netlifyIdentity);
-      setTimeout(() => waitForIdentity(cb), 50);
-    })(function(idw){
-      if (!idw.__nectiqWired) {
-        idw.on('init',  window.refreshAuthUI);
+   (function waitForIdentity(cb){
+    if (window.netlifyIdentity) return cb(window.netlifyIdentity);
+    setTimeout(() => waitForIdentity(cb), 50);
+  })(function(idw){
+    if (!idw.__nectiqWired) {
+      // Fires once after init; Netlify Identity passes the current user (or null)
+      idw.on('init', (user) => {
+        refreshAuthUI();
+        if (user && typeof window.loadDevices === 'function') {
+          window.loadDevices();          // safe: user already has a JWT, avoids 401s
+        }
+      });
 
-        idw.on('login', async () => {
-          window.refreshAuthUI();
-          // clear the hash the widget may leave (# or #access_token=…)
-          if (location.hash) history.replaceState(null, '', location.pathname + location.search);
-          try { idw.close(); } catch {}
-          // refresh data without reloading the page
-          if (typeof window.loadDevices === 'function') await window.loadDevices();
-        });
+      idw.on('login', async () => {
+        refreshAuthUI();
+        // clear the hash the widget leaves (/# or #access_token=…)
+        if (location.hash) {
+          history.replaceState(null, '', location.pathname + location.search);
+        }
+        try { idw.close(); } catch {}
+        if (typeof window.loadDevices === 'function') {
+          await window.loadDevices();     // re-query with auth
+        }
+      });
 
-        idw.on('logout', () => {
-          window.refreshAuthUI();
-          if (location.hash) history.replaceState(null, '', location.pathname + location.search);
-          const sel = document.getElementById('deviceSelect');
-          if (sel) sel.innerHTML = '';
-          const pv = document.getElementById('devicePreview');
-          if (pv) pv.textContent = '';
-        });
+      idw.on('logout', () => {
+        refreshAuthUI();
+        if (location.hash) {
+          history.replaceState(null, '', location.pathname + location.search);
+        }
+        const sel = document.getElementById('deviceSelect');
+        if (sel) sel.innerHTML = '';
+        const pv = document.getElementById('devicePreview');
+        if (pv) pv.textContent = '';
+      });
 
-        idw.__nectiqWired = true;
-      }
-      idw.init();
-    });
-  </script>
+      idw.__nectiqWired = true;
+    }
+
+    // DEFER init until <body> exists to avoid appendChild null
+    const start = () => idw.init();
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', start, { once: true });
+    } else {
+      start();
+    }
+  });
+</script>
 </head>
 
 
