@@ -1,24 +1,41 @@
-// functions/claim-device.js
-import { requireUser } from './_auth.js';
-import { query } from './utils/db.js';
+// /netlify/functions/claim-device.js
+import { requireUser } from "./_auth.js";
+import { getClient } from "./db.js";
 
 export const handler = async (event) => {
-  try {
-    const user = await requireUser(event); // throws 401 response on fail
+  if (event.httpMethod !== "POST") {
+    return { statusCode: 405, body: "Method Not Allowed" };
+  }
 
-    const { device_id, name } = JSON.parse(event.body || '{}');
+  const { user, error } = await requireUser(event);
+  if (error) return { statusCode: error.statusCode, body: JSON.stringify({ ok: false, error: error.message }) };
+
+  try {
+    const { device_id, role } = JSON.parse(event.body || "{}");
     if (!device_id) {
-      return { statusCode: 400, body: JSON.stringify({ error: 'device_id required' }) };
+      return { statusCode: 400, body: JSON.stringify({ ok: false, error: "device_id is required" }) };
     }
 
-    // ... your DB logic (ensure user row, claim device, etc.) ...
-    // await query`insert into ...`;
+    const db = await getClient();
+
+    // Ensure device exists
+    await db.query(
+      `INSERT INTO devices (device_id, name) VALUES ($1, $2)
+       ON CONFLICT (device_id) DO NOTHING`,
+      [device_id, device_id]
+    );
+
+    // Link user ↔ device
+    await db.query(
+      `INSERT INTO device_users (device_id, user_id, role)
+       VALUES ($1, $2, COALESCE($3,'owner'))
+       ON CONFLICT (device_id, user_id) DO UPDATE SET role = EXCLUDED.role`,
+      [device_id, user.id, role || "owner"]
+    );
 
     return { statusCode: 200, body: JSON.stringify({ ok: true }) };
-  } catch (resp) {
-    // If requireUser threw the 401 response, return it unchanged.
-    if (resp?.statusCode) return resp;
-    // Otherwise it's an unexpected error.
-    return { statusCode: 500, body: JSON.stringify({ error: 'Server error' }) };
+  } catch (e) {
+    console.error(e);
+    return { statusCode: 500, body: JSON.stringify({ ok: false, error: "Server error" }) };
   }
 };
