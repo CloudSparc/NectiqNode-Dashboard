@@ -1,36 +1,44 @@
 // functions/readings.js
 import { requireUser } from './_auth.js';
-import { query } from './utils/db.js';
+import { sql } from './utils/db.js';
 
 export async function handler(event) {
-  const [user, err] = await requireUser(event);
-  if (err) return err;
+  try {
+    const user = await requireUser(event);
 
-  const p = new URLSearchParams(event.queryStringParameters || {});
-  const device_id = p.get('device_id');
-  const limit = Math.min(parseInt(p.get('limit') || '200', 10), 200);
+    const { device_id, limit = 200 } =
+      (event.queryStringParameters || {});
 
-  if (!device_id) return { statusCode: 400, body: 'device_id required' };
+    // Optional: verify the user actually owns this device
+    const owns = await sql`
+      SELECT 1
+      FROM device_users
+      WHERE user_id = ${user.id} AND device_id = ${device_id}
+      LIMIT 1
+    `;
+    if (owns.length === 0) {
+      return { statusCode: 403, body: JSON.stringify({ error: 'Forbidden' }) };
+    }
 
-  // Optional guard: only allow if the user has access to this device
-  const own = await query`
-    SELECT 1 FROM device_users WHERE device_id = ${device_id} AND user_id = ${user.id}::uuid
-  `;
-  if (own.rowCount === 0) {
-    return { statusCode: 403, body: 'Forbidden (no access to device)' };
+    const rows = await sql`
+      SELECT ts, temp_c, humidity, sound_db
+      FROM readings
+      WHERE device_id = ${device_id}
+      ORDER BY ts ASC
+      LIMIT ${limit}
+    `;
+
+    return {
+      statusCode: 200,
+      body: JSON.stringify({ readings: rows }),
+      headers: { 'content-type': 'application/json' },
+    };
+  } catch (err) {
+    console.error('readings error', err);
+    return {
+      statusCode: 502,
+      body: JSON.stringify({ error: 'Bad Gateway', details: String(err?.message || err) }),
+      headers: { 'content-type': 'application/json' },
+    };
   }
-
-  const { rows } = await query`
-    SELECT ts, temp_c, humidity, sound_db
-    FROM readings
-    WHERE device_id = ${device_id}
-    ORDER BY ts ASC
-    LIMIT ${limit}
-  `;
-
-  return {
-    statusCode: 200,
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ readings: rows }),
-  };
 }
