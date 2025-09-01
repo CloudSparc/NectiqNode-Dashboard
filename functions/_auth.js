@@ -13,11 +13,13 @@ function getAuthHeader(event) {
 }
 
 function buildIssuer(event) {
-  // Works on prod, deploy previews, and netlify dev
   const host = (event.headers?.host || '').trim();
   const scheme = host.startsWith('localhost') ? 'http' : 'https';
   return `${scheme}://${host}/.netlify/identity`;
 }
+
+// Netlify Identity's global JWKS location (works for prod, previews, dev)
+const GLOBAL_JWKS_URL = 'https://identity.netlify.com/.well-known/jwks.json';
 
 export async function requireUser(event) {
   const authz = getAuthHeader(event);
@@ -27,35 +29,29 @@ export async function requireUser(event) {
 
   const token = authz.slice('Bearer '.length).trim();
   const issuer = buildIssuer(event);
-  const jwksUrl = `${issuer}/.well-known/jwks.json`;
 
   try {
-    const JWKS = createRemoteJWKSet(new URL(jwksUrl));
-    // Skip audience check; Identity tokens typically don’t carry one you control
+    const JWKS = createRemoteJWKSet(new URL(GLOBAL_JWKS_URL));
     const { payload } = await jwtVerify(token, JWKS, { issuer });
 
-    // Shape your user object here:
-    const user = {
+    return {
       id: payload.sub,
       email: payload.email,
       app_metadata: payload.app_metadata,
       user_metadata: payload.user_metadata,
     };
-    return user;
   } catch (e) {
     console.error('JWT verify failed:', {
       message: e?.message,
       name: e?.name,
       issuer,
-      jwksUrl,
+      jwksUrl: GLOBAL_JWKS_URL,
     });
-    // return 401 instead of throwing a raw object
     throw json(401, { error: 'Unauthorized' });
   }
 }
 
 export const handler = async (event) => {
-  // optional: a tiny endpoint for quick checks
   try {
     const user = await requireUser(event);
     return json(200, { ok: true, user });
