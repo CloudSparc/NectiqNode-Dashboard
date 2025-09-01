@@ -1,6 +1,6 @@
-// /netlify/functions/devices.js
+// functions/devices.js
 import { requireUser } from "./_auth.js";
-import { getClient } from "./db.js";
+import { getClient } from "./utils/db.js";
 
 export const handler = async (event) => {
   const { user, error } = await requireUser(event);
@@ -8,14 +8,14 @@ export const handler = async (event) => {
 
   try {
     const db = await getClient();
-    const q = `
-      SELECT d.device_id, d.name
-      FROM device_users du
-      JOIN devices d ON d.device_id = du.device_id
-      WHERE du.user_id = $1
-      ORDER BY d.name ASC
-    `;
-    const { rows } = await db.query(q, [user.id]);
+    const { rows } = await db.query(
+      `SELECT d.device_id, d.name
+       FROM device_users du
+       JOIN devices d ON d.device_id = du.device_id
+       WHERE du.user_id = $1
+       ORDER BY d.name ASC`,
+      [user.id]
+    );
     return { statusCode: 200, body: JSON.stringify({ ok: true, devices: rows }) };
   } catch (e) {
     console.error(e);
