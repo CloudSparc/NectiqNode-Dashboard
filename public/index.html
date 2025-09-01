@@ -13,47 +13,52 @@
   <script src="https://identity.netlify.com/v1/netlify-identity-widget.js"></script>
 
   <script>
-    /* ---------- GLOBAL HELPERS (define once) ---------- */
-    const $ = (s) => document.querySelector(s);
+  /* already present globals:
+     - window.netlifyIdentity (widget)
+     - refreshAuthUI()
+     - authFetch()
+     - loadDevices() defined later
+  */
 
-    async function authFetch(url, opts = {}) {
-      const idw = window.netlifyIdentity;
-      const u = idw ? idw.currentUser() : null;
-      if (u) {
-        const token = await u.jwt();
-        opts.headers = { ...(opts.headers || {}), Authorization: `Bearer ${token}` };
-      }
-      return fetch(url, opts);
+  (function waitForIdentity(cb){
+    if (window.netlifyIdentity) return cb(window.netlifyIdentity);
+    setTimeout(() => waitForIdentity(cb), 50);
+  })(function(idw){
+    if (!idw.__nectiqWired) {
+      idw.on('init', refreshAuthUI);
+
+      idw.on('login', async () => {
+        refreshAuthUI();
+        // Clear the hash the widget leaves behind (/# or #access_token=…)
+        if (location.hash) {
+          history.replaceState(null, '', location.pathname + location.search);
+        }
+        // Close the widget and refresh data instead of reloading the page
+        try { idw.close(); } catch {}
+        if (typeof loadDevices === 'function') {
+          await loadDevices();
+        }
+      });
+
+      idw.on('logout', () => {
+        refreshAuthUI();
+        if (location.hash) {
+          history.replaceState(null, '', location.pathname + location.search);
+        }
+        // Clear UI state
+        const sel = document.querySelector('#deviceSelect');
+        if (sel) sel.innerHTML = '';
+        const preview = document.querySelector('#devicePreview');
+        if (preview) preview.textContent = '';
+        // No reload here either
+      });
+
+      idw.__nectiqWired = true;
     }
-    window.authFetch = authFetch;
+    idw.init();
+  });
+</script>
 
-    function refreshAuthUI() {
-      const idw = window.netlifyIdentity;
-      if (!idw) return;
-      const u = idw.currentUser();
-      const login  = $('#btnLogin');
-      const logout = $('#btnLogout');
-      const whoami = $('#whoami');
-      if (!login || !logout || !whoami) return;
-      login.style.display  = u ? 'none' : '';
-      logout.style.display = u ? '' : 'none';
-      whoami.textContent   = u ? `Signed in as ${u.email}` : '';
-    }
-
-    // Wait for Identity, then init once
-    (function waitForIdentity(cb){
-      if (window.netlifyIdentity) return cb(window.netlifyIdentity);
-      setTimeout(() => waitForIdentity(cb), 50);
-    })(function(idw){
-      if (!idw.__nectiqWired) {
-        idw.on('init',  refreshAuthUI);
-        idw.on('login', () => { refreshAuthUI(); location.reload(); });
-        idw.on('logout', () => { refreshAuthUI(); location.reload(); });
-        idw.__nectiqWired = true;
-      }
-      idw.init();
-    });
-  </script>
 </head>
 
 <body>
