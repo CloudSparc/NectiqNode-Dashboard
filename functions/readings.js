@@ -1,53 +1,54 @@
-// functions/readings.js
-import { requireUser } from './_auth.js';
-import { sql } from './utils/db.js';
+// /netlify/functions/readings.js
+import { requireUser } from "./_auth.js";
+import { getClient } from "./db.js";
 
-export async function handler(event) {
-  const debug = event.queryStringParameters?.debug === '1';
+function parseSince(since) {
+  if (!since) return null;
+  // crude parser: "24h", "7d"
+  const m = /^(\d+)([hd])$/i.exec(since);
+  if (!m) return null;
+  const n = parseInt(m[1], 10);
+  const unit = m[2].toLowerCase();
+  const ms = unit === "h" ? n * 3600_000 : n * 24 * 3600_000;
+  return new Date(Date.now() - ms);
+}
+
+export const handler = async (event) => {
+  const { user, error } = await requireUser(event);
+  if (error) return { statusCode: error.statusCode, body: JSON.stringify({ ok: false, error: error.message }) };
 
   try {
-    const user = await requireUser(event);
-    const { device_id, limit = 200 } = event.queryStringParameters || {};
-
-    // Verify the user owns the device
-    const owns = await sql`
-      SELECT 1 FROM device_users
-      WHERE user_id = ${user.id} AND device_id = ${device_id}
-      LIMIT 1
-    `;
-    if (owns.length === 0) {
-      return { statusCode: 403, body: JSON.stringify({ error: 'Forbidden' }) };
+    const deviceId = event.queryStringParameters?.device_id;
+    const sinceStr = event.queryStringParameters?.since;
+    if (!deviceId) {
+      return { statusCode: 400, body: JSON.stringify({ ok: false, error: "device_id is required" }) };
     }
 
-    const rows = await sql`
-      SELECT ts, temp_c, humidity, sound_db
-      FROM readings
-      WHERE device_id = ${device_id}
-      ORDER BY ts ASC
-      LIMIT ${limit}
-    `;
+    const db = await getClient();
 
-    const body = { readings: rows };
-    if (debug) {
-      body.debug = {
-        user,
-        count: rows.length,
-        firstTs: rows[0]?.ts || null,
-        lastTs: rows[rows.length - 1]?.ts || null,
-      };
+    // Guard: ensure user has access to this device
+    const hasAccess = await db.query(
+      `SELECT 1 FROM device_users WHERE device_id = $1 AND user_id = $2`,
+      [deviceId, user.id]
+    );
+    if (hasAccess.rowCount === 0) {
+      return { statusCode: 403, body: JSON.stringify({ ok: false, error: "Forbidden" }) };
     }
 
-    return {
-      statusCode: 200,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    };
-  } catch (err) {
-    console.error('readings error:', err);
-    return {
-      statusCode: 502,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ error: 'Bad Gateway', details: String(err?.message || err) }),
-    };
+    const since = parseSince(sinceStr);
+    const params = [deviceId];
+    let sql = `SELECT ts, temp_c, humidity, sound_db
+               FROM readings WHERE device_id = $1`;
+    if (since) {
+      params.push(since.toISOString());
+      sql += ` AND ts >= $2`;
+    }
+    sql += ` ORDER BY ts ASC LIMIT 5000`;
+
+    const { rows } = await db.query(sql, params);
+    return { statusCode: 200, body: JSON.stringify({ ok: true, readings: rows }) };
+  } catch (e) {
+    console.error(e);
+    return { statusCode: 500, body: JSON.stringify({ ok: false, error: "Server error" }) };
   }
-}
+};
