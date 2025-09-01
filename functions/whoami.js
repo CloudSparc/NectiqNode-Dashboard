@@ -1,22 +1,42 @@
 // functions/whoami.js
-import { requireUser } from './_auth.js';
+import { requireUser, getAuthContext } from './_auth.js';
 
-const json = (code, body) => ({
-  statusCode: code,
-  headers: { 'content-type': 'application/json' },
-  body: JSON.stringify(body),
-});
+export async function handler(event) {
+  const debug = event.queryStringParameters?.debug === '1';
 
-export const handler = async (event) => {
   try {
-    const user = await requireUser(event);   // verifies the Bearer JWT
-    return json(200, { ok: true, user });
-  } catch (e) {
-    // If requireUser deliberately threw a Netlify-style response (e.g., 401),
-    // just return it so Netlify doesn’t crash the function.
-    if (e?.statusCode) return e;
+    const ctx = await getAuthContext(event); // doesn't throw; just inspects headers
+    let user = null;
+    let ok = false;
+    try {
+      const u = await requireUser(event); // verifies JWT and upserts the user row
+      user = { id: u.id, email: u.email, roles: u.roles || [] };
+      ok = true;
+    } catch (e) {
+      ok = false;
+    }
 
-    console.error('whoami error:', e);
-    return json(500, { ok: false, error: e?.message ?? 'server error' });
+    const body = { ok, user };
+    if (debug) {
+      body.debug = {
+        hasAuthHeader: !!ctx.authHeader,
+        authHeaderPrefix: ctx.authHeader?.slice(0, 10) || null,
+        clientContextHasUser: !!ctx.clientContextUser,
+        issuer: ctx.issuer,
+        jwksUrl: ctx.jwksUrl,
+      };
+    }
+
+    return {
+      statusCode: ok ? 200 : 401,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    };
+  } catch (err) {
+    return {
+      statusCode: 500,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ok: false, error: String(err?.message || err) }),
+    };
   }
-};
+}
