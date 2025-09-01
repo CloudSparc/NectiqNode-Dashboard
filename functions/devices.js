@@ -1,24 +1,27 @@
-// functions/devices.js
 import { requireUser } from './_auth.js';
-import { query } from './utils/db.js';
+import { sql } from './utils/db.js';
 
-export async function handler(event) {
-  const [user, err] = await requireUser(event);
-  if (err) return err;
+export async function handler(event, context) {
+  try {
+    const user = await requireUser(event);
 
-  // Return only devices the user has access to
-  const { rows } = await query`
-    SELECT d.device_id, d.name
-    FROM device_users du
-    JOIN devices d ON d.device_id = du.device_id
-    WHERE du.user_id = ${user.id}::uuid
-    ORDER BY COALESCE(d.name, d.device_id)
-  `;
+    // ✅ Correct: sql returns rows directly
+    const devices = await sql`
+      SELECT d.device_id, d.name
+      FROM device_users du
+      JOIN devices d ON d.device_id = du.device_id
+      WHERE du.user_id = ${user.id}
+    `;
 
-  // Important: 200 with empty list is OK (don’t return 401)
-  return {
-    statusCode: 200,
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ devices: rows }),
-  };
+    return {
+      statusCode: 200,
+      body: JSON.stringify({ devices }),
+    };
+  } catch (err) {
+    console.error('devices error', err);
+    return {
+      statusCode: 500,
+      body: JSON.stringify({ error: err.message }),
+    };
+  }
 }
