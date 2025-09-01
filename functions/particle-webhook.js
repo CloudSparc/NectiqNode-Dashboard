@@ -1,79 +1,62 @@
 // functions/particle-webhook.js
-import { query, ensureSchema } from './utils/db.js';
+import crypto from "crypto";
+import { query, ensureSchema } from "./utils/db.js";
 
-export default async (req, context) => {
-  if (req.method === 'OPTIONS') {
-    return new Response(null, { headers: cors() });
+/**
+ * Expected JSON body (example):
+ * {
+ *   "secret": "...", // must match WEBHOOK_SECRET
+ *   "device_id": "boron-001",
+ *   "ts": "2025-09-01T19:20:00Z",
+ *   "temp_c": 33.5,
+ *   "humidity": 57.2,
+ *   "sound_db": 44.1
+ * }
+ */
+export const handler = async (event) => {
+  if (event.httpMethod !== "POST") {
+    return { statusCode: 405, body: "Method Not Allowed" };
   }
-  if (req.method !== 'POST') {
-    return json({ error: 'Method not allowed' }, 405);
-  }
-
-  const secret = req.headers.get('x-webhook-secret');
-  if (!secret || secret !== (process.env.WEBHOOK_SECRET || 'change-me')) {
-    return json({ error: 'unauthorized' }, 401);
-  }
-
-  let payload;
-  try { payload = await req.json(); }
-  catch { return json({ error: 'invalid json' }, 400); }
-
-  const device_id = payload.device_id || payload.coreid || 'unknown';
-  const published_at = payload.published_at;
-  const data = payload.data;
-
-  // parse data
-  let parsed = {};
-  if (typeof data === 'string') {
-    try { parsed = JSON.parse(data); }
-    catch {
-      const parts = data.split(',').map(p => p.trim());
-      if (parts.length >= 3) parsed = { t: parseFloat(parts[0]), h: parseFloat(parts[1]), s: parseFloat(parts[2]) };
-    }
-  } else if (data && typeof data === 'object') {
-    parsed = data;
-  }
-
-  const t = coalesce(parsed.t, parsed.temp, parsed.temperature);
-  const h = coalesce(parsed.h, parsed.hum, parsed.humidity);
-  const s = coalesce(parsed.s, parsed.sound, parsed.sound_db);
-
-  let ts;
-  try { ts = published_at ? new Date(published_at).toISOString() : new Date().toISOString(); }
-  catch { ts = new Date().toISOString(); }
 
   try {
+    const data = JSON.parse(event.body || "{}");
+    const secret = process.env.WEBHOOK_SECRET;
+    if (!secret) {
+      console.warn("WEBHOOK_SECRET is not set");
+      return { statusCode: 500, body: "Missing server secret" };
+    }
+    if (data.secret !== secret) {
+      return { statusCode: 401, body: "Unauthorized" };
+    }
+
     await ensureSchema();
-    await query(`
-      INSERT INTO devices (device_id, name)
-      VALUES ($1, $1)
-      ON CONFLICT (device_id) DO NOTHING
-    `, [device_id]);
 
-    await query(`
-      INSERT INTO readings (device_id, ts, temp_c, humidity, sound_db, payload_json)
-      VALUES ($1, $2, $3, $4, $5, $6::jsonb)
-    `, [device_id, ts, t, h, s, JSON.stringify(payload)]);
+    const device_id = String(data.device_id || "").trim();
+    if (!device_id) return { statusCode: 400, body: "device_id required" };
+
+    const ts = data.ts ? new Date(data.ts) : new Date();
+    const temp_c = data.temp_c ?? null;
+    const humidity = data.humidity ?? null;
+    const sound_db = data.sound_db ?? null;
+
+    // Make sure device exists
+    await query(
+      `INSERT INTO devices (device_id, name)
+       VALUES ($1, $1)
+       ON CONFLICT (device_id) DO NOTHING`,
+      [device_id]
+    );
+
+    // Insert reading
+    await query(
+      `INSERT INTO readings (device_id, ts, temp_c, humidity, sound_db)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [device_id, ts.toISOString(), temp_c, humidity, sound_db]
+    );
+
+    return { statusCode: 200, body: JSON.stringify({ ok: true }) };
   } catch (e) {
-    return json({ error: 'db error', details: e.message }, 500);
+    console.error("webhook error", e);
+    return { statusCode: 500, body: "Server error" };
   }
-
-  return json({ status: 'ok' });
 };
-
-function coalesce(...vals) {
-  for (const v of vals) if (v !== undefined && v !== null) return v;
-  return null;
-}
-
-function cors() {
-  return {
-    'Access-Control-Allow-Origin': process.env.CORS_ORIGINS || '*',
-    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, X-Webhook-Secret'
-  };
-}
-
-function json(body, status=200) {
-  return new Response(JSON.stringify(body), { status, headers: { ...cors(), 'Content-Type': 'application/json' } });
-}
