@@ -1,74 +1,67 @@
 // functions/_auth.js
 import { query } from './utils/db.js';
-import { jwtVerify, createRemoteJWKSet } from 'jose';
+import { jwtVerify, createRemoteJWKSet, decodeJwt } from 'jose';
 
 const isUUID = (s) =>
   typeof s === 'string' &&
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(s);
 
-// Cache JWKS between invocations
-let JWKS;
-
 /**
- * Verify a Netlify Identity JWT manually when clientContext.user is missing.
- * Returns { sub, email } or throws.
+ * Verify a Netlify Identity JWT by deriving the issuer from the token itself.
+ * This avoids any mismatch between SITE_URL/URL and the Identity site.
  */
-async function verifyIdentityJWT(authorization) {
-  if (!authorization?.startsWith('Bearer ')) {
-    throw new Error('No bearer token');
-  }
+async function verifyIdentityJWTFromHeader(authorization) {
+  if (!authorization?.startsWith('Bearer ')) throw new Error('No bearer token');
   const token = authorization.slice(7).trim();
 
-  // In Netlify Functions, URL is the site URL (prod) or deploy URL.
-  // SITE_URL also works. Prefer URL, fallback to SITE_URL.
-  const origin = (process.env.URL || process.env.SITE_URL || '').replace(/\/$/, '');
-  if (!origin) throw new Error('Missing site URL env');
+  // Read iss (issuer) from token payload without verifying yet
+  const decoded = decodeJwt(token);
+  const iss = decoded?.iss;
+  if (!iss) throw new Error('Missing iss in token');
 
-  // Netlify Identity JWKS + issuer
-  const jwksUrl = new URL('/.netlify/identity/.well-known/jwks.json', origin);
-  const issuer  = `${origin}/.netlify/identity`;
+  // Netlify Identity JWKS lives at: {iss}/.well-known/jwks.json
+  const jwksUrl = new URL('/.well-known/jwks.json', iss);
+  const JWKS = createRemoteJWKSet(jwksUrl);
 
-  if (!JWKS) JWKS = createRemoteJWKSet(jwksUrl);
-  const { payload } = await jwtVerify(token, JWKS, { issuer, audience: 'netlify' });
+  const { payload } = await jwtVerify(token, JWKS, {
+    issuer: iss,
+    audience: 'netlify',  // Netlify Identity uses "netlify"
+  });
 
   return {
     sub: payload.sub,
-    email: payload.email || ''
+    email: payload.email || '',
   };
 }
 
-/**
- * Read the Netlify user from the request, verify if needed, and ensure a DB row.
- * Returns [user, null] on success or [null, httpError] on failure.
- */
 export async function requireUser(event) {
   try {
-    // 1) Try Netlify-provided user first
-    let u = event?.clientContext?.user;
+    // 1) Try Netlify-provided user (when it works, this is already populated)
     let id, email;
+    const ctxUser = event?.clientContext?.user;
 
-    if (u) {
-      id = u.sub || u.id || u.user_id;
-      email = u.email || '';
+    if (ctxUser) {
+      id = ctxUser.sub || ctxUser.id || ctxUser.user_id;
+      email = ctxUser.email || '';
     } else {
-      // 2) Fallback: verify the Authorization header ourselves
+      // 2) Fallback: verify Authorization header manually (most robust path)
       const auth = event.headers?.authorization || event.headers?.Authorization;
-      const decoded = await verifyIdentityJWT(auth);
-      id = decoded.sub;
-      email = decoded.email;
+      const { sub, email: em } = await verifyIdentityJWTFromHeader(auth);
+      id = sub;
+      email = em;
     }
 
     if (!id) {
       return [null, { statusCode: 401, body: 'Unauthorized (no user id)' }];
     }
 
-    // Many Identity providers use UUIDs; if for some reason it's not, you can
-    // change your DB schema to TEXT or store a mapping. For now we enforce UUID.
     if (!isUUID(id)) {
+      // If your Identity is not issuing UUIDs, either change users.id to TEXT
+      // or create a mapping table. For now we enforce UUIDs.
       return [null, { statusCode: 500, body: 'Server expects UUID user ids from Identity' }];
     }
 
-    // Auto-provision / keep email fresh
+    // Auto-provision the user and keep email in sync
     await query`
       INSERT INTO users (id, email)
       VALUES (${id}::uuid, ${email})
