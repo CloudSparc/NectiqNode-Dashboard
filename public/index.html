@@ -13,53 +13,65 @@
   <script src="https://identity.netlify.com/v1/netlify-identity-widget.js"></script>
 
   <script>
-  /* already present globals:
-     - window.netlifyIdentity (widget)
-     - refreshAuthUI()
-     - authFetch()
-     - loadDevices() defined later
-  */
+    /* ---------- 1) DEFINE HELPERS FIRST ---------- */
+    window.$ = (s) => document.querySelector(s);
 
-  (function waitForIdentity(cb){
-    if (window.netlifyIdentity) return cb(window.netlifyIdentity);
-    setTimeout(() => waitForIdentity(cb), 50);
-  })(function(idw){
-    if (!idw.__nectiqWired) {
-      idw.on('init', refreshAuthUI);
+    window.refreshAuthUI = function refreshAuthUI() {
+      const idw = window.netlifyIdentity;
+      if (!idw) return;
+      const u = idw.currentUser();
+      const login  = document.getElementById('btnLogin');
+      const logout = document.getElementById('btnLogout');
+      const whoami = document.getElementById('whoami');
+      if (!login || !logout || !whoami) return;
+      login.style.display  = u ? 'none' : '';
+      logout.style.display = u ? '' : 'none';
+      whoami.textContent   = u ? `Signed in as ${u.email}` : '';
+    };
 
-      idw.on('login', async () => {
-        refreshAuthUI();
-        // Clear the hash the widget leaves behind (/# or #access_token=…)
-        if (location.hash) {
-          history.replaceState(null, '', location.pathname + location.search);
-        }
-        // Close the widget and refresh data instead of reloading the page
-        try { idw.close(); } catch {}
-        if (typeof loadDevices === 'function') {
-          await loadDevices();
-        }
-      });
+    window.authFetch = async function authFetch(url, opts = {}) {
+      const idw = window.netlifyIdentity;
+      const u = idw ? idw.currentUser() : null;
+      if (u) {
+        const token = await u.jwt();
+        opts.headers = { ...(opts.headers || {}), Authorization: `Bearer ${token}` };
+      }
+      return fetch(url, opts);
+    };
 
-      idw.on('logout', () => {
-        refreshAuthUI();
-        if (location.hash) {
-          history.replaceState(null, '', location.pathname + location.search);
-        }
-        // Clear UI state
-        const sel = document.querySelector('#deviceSelect');
-        if (sel) sel.innerHTML = '';
-        const preview = document.querySelector('#devicePreview');
-        if (preview) preview.textContent = '';
-        // No reload here either
-      });
+    /* ---------- 2) THEN WIRE IDENTITY ---------- */
+    (function waitForIdentity(cb) {
+      if (window.netlifyIdentity) return cb(window.netlifyIdentity);
+      setTimeout(() => waitForIdentity(cb), 50);
+    })(function(idw){
+      if (!idw.__nectiqWired) {
+        idw.on('init',  window.refreshAuthUI);
 
-      idw.__nectiqWired = true;
-    }
-    idw.init();
-  });
-</script>
+        idw.on('login', async () => {
+          window.refreshAuthUI();
+          // clear the hash the widget may leave (# or #access_token=…)
+          if (location.hash) history.replaceState(null, '', location.pathname + location.search);
+          try { idw.close(); } catch {}
+          // refresh data without reloading the page
+          if (typeof window.loadDevices === 'function') await window.loadDevices();
+        });
 
+        idw.on('logout', () => {
+          window.refreshAuthUI();
+          if (location.hash) history.replaceState(null, '', location.pathname + location.search);
+          const sel = document.getElementById('deviceSelect');
+          if (sel) sel.innerHTML = '';
+          const pv = document.getElementById('devicePreview');
+          if (pv) pv.textContent = '';
+        });
+
+        idw.__nectiqWired = true;
+      }
+      idw.init();
+    });
+  </script>
 </head>
+
 
 <body>
   <header style="display:flex;justify-content:center;align-items:center;gap:16px;margin:16px 0;">
