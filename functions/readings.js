@@ -3,16 +3,15 @@ import { requireUser } from './_auth.js';
 import { sql } from './utils/db.js';
 
 export async function handler(event) {
+  const debug = event.queryStringParameters?.debug === '1';
+
   try {
     const user = await requireUser(event);
+    const { device_id, limit = 200 } = event.queryStringParameters || {};
 
-    const { device_id, limit = 200 } =
-      (event.queryStringParameters || {});
-
-    // Optional: verify the user actually owns this device
+    // Verify the user owns the device
     const owns = await sql`
-      SELECT 1
-      FROM device_users
+      SELECT 1 FROM device_users
       WHERE user_id = ${user.id} AND device_id = ${device_id}
       LIMIT 1
     `;
@@ -28,17 +27,27 @@ export async function handler(event) {
       LIMIT ${limit}
     `;
 
+    const body = { readings: rows };
+    if (debug) {
+      body.debug = {
+        user,
+        count: rows.length,
+        firstTs: rows[0]?.ts || null,
+        lastTs: rows[rows.length - 1]?.ts || null,
+      };
+    }
+
     return {
       statusCode: 200,
-      body: JSON.stringify({ readings: rows }),
       headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
     };
   } catch (err) {
-    console.error('readings error', err);
+    console.error('readings error:', err);
     return {
       statusCode: 502,
-      body: JSON.stringify({ error: 'Bad Gateway', details: String(err?.message || err) }),
       headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ error: 'Bad Gateway', details: String(err?.message || err) }),
     };
   }
 }
