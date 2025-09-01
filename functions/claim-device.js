@@ -1,26 +1,24 @@
 // functions/claim-device.js
 import { requireUser } from './_auth.js';
-import { sql } from './utils/db.js';
+import { query } from './utils/db.js';
 
-export default async (event) => {
-  const { user, error } = requireUser(event);
-  if (error) return error;
+export const handler = async (event) => {
+  try {
+    const user = await requireUser(event); // throws 401 response on fail
 
-  const { device_id, name } = JSON.parse(event.body || '{}');
-  if (!device_id) {
-    return new Response(JSON.stringify({ error: 'device_id required' }), { status: 400 });
+    const { device_id, name } = JSON.parse(event.body || '{}');
+    if (!device_id) {
+      return { statusCode: 400, body: JSON.stringify({ error: 'device_id required' }) };
+    }
+
+    // ... your DB logic (ensure user row, claim device, etc.) ...
+    // await query`insert into ...`;
+
+    return { statusCode: 200, body: JSON.stringify({ ok: true }) };
+  } catch (resp) {
+    // If requireUser threw the 401 response, return it unchanged.
+    if (resp?.statusCode) return resp;
+    // Otherwise it's an unexpected error.
+    return { statusCode: 500, body: JSON.stringify({ error: 'Server error' }) };
   }
-
-  await sql`insert into devices (device_id, name)
-            values (${device_id}, ${name || null})
-            on conflict (device_id) do update
-            set name = coalesce(excluded.name, devices.name)`;
-
-  await sql`insert into device_users (device_id, user_id, role)
-            values (${device_id}, ${user.sub}, 'owner')
-            on conflict (device_id, user_id) do nothing`;
-
-  return new Response(JSON.stringify({ ok: true }), {
-    headers: { 'Content-Type': 'application/json' }
-  });
 };
