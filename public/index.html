@@ -5,15 +5,18 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>NectiqNode Monitor</title>
 
+  <!-- Fonts & styles -->
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
+
+  <!-- Chart.js -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 
-  <!-- Load Netlify Identity ONCE -->
+  <!-- Netlify Identity (load once) -->
   <script src="https://identity.netlify.com/v1/netlify-identity-widget.js"></script>
 
   <script>
-    /* ---------- 1) DEFINE HELPERS FIRST ---------- */
+    /* ------------------ 1) Helpers defined first ------------------ */
     window.$ = (s) => document.querySelector(s);
 
     window.refreshAuthUI = function refreshAuthUI() {
@@ -29,6 +32,7 @@
       whoami.textContent   = u ? `Signed in as ${u.email}` : '';
     };
 
+    // Attach JWT when available
     window.authFetch = async function authFetch(url, opts = {}) {
       const idw = window.netlifyIdentity;
       const u = idw ? idw.currentUser() : null;
@@ -39,57 +43,59 @@
       return fetch(url, opts);
     };
 
-    /* ---------- 2) THEN WIRE IDENTITY ---------- */
-   (function waitForIdentity(cb){
-    if (window.netlifyIdentity) return cb(window.netlifyIdentity);
-    setTimeout(() => waitForIdentity(cb), 50);
-  })(function(idw){
-    if (!idw.__nectiqWired) {
-      // Fires once after init; Netlify Identity passes the current user (or null)
-      idw.on('init', (user) => {
-        refreshAuthUI();
-        if (user && typeof window.loadDevices === 'function') {
-          window.loadDevices();          // safe: user already has a JWT, avoids 401s
-        }
-      });
+    /* ------------- 2) Identity wiring (init deferred) ------------- */
+    (function waitForIdentity(cb){
+      if (window.netlifyIdentity) return cb(window.netlifyIdentity);
+      setTimeout(() => waitForIdentity(cb), 50);
+    })(function(idw){
+      if (!idw.__nectiqWired) {
+        // Fires once after init
+        idw.on('init', (user) => {
+          refreshAuthUI();
+          // If already logged in, populate data now (prevents 401)
+          if (user && typeof window.loadDevices === 'function') {
+            window.loadDevices();
+          }
+        });
 
-      idw.on('login', async () => {
-        refreshAuthUI();
-        // clear the hash the widget leaves (/# or #access_token=…)
-        if (location.hash) {
-          history.replaceState(null, '', location.pathname + location.search);
-        }
-        try { idw.close(); } catch {}
-        if (typeof window.loadDevices === 'function') {
-          await window.loadDevices();     // re-query with auth
-        }
-      });
+        idw.on('login', async () => {
+          refreshAuthUI();
+          // Clean up the hash like "#access_token=..." or "/#"
+          if (location.hash) {
+            history.replaceState(null, '', location.pathname + location.search);
+          }
+          try { idw.close(); } catch {}
+          if (typeof window.loadDevices === 'function') {
+            await window.loadDevices();
+          }
+        });
 
-      idw.on('logout', () => {
-        refreshAuthUI();
-        if (location.hash) {
-          history.replaceState(null, '', location.pathname + location.search);
-        }
-        const sel = document.getElementById('deviceSelect');
-        if (sel) sel.innerHTML = '';
-        const pv = document.getElementById('devicePreview');
-        if (pv) pv.textContent = '';
-      });
+        idw.on('logout', () => {
+          refreshAuthUI();
+          if (location.hash) {
+            history.replaceState(null, '', location.pathname + location.search);
+          }
+          // Clear UI
+          const sel = document.getElementById('deviceSelect');
+          if (sel) sel.innerHTML = '';
+          const pv = document.getElementById('devicePreview');
+          if (pv) pv.textContent = '';
+          // (Charts remain but will show no new points until login)
+        });
 
-      idw.__nectiqWired = true;
-    }
+        idw.__nectiqWired = true;
+      }
 
-    // DEFER init until <body> exists to avoid appendChild null
-    const start = () => idw.init();
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', start, { once: true });
-    } else {
-      start();
-    }
-  });
-</script>
+      // Defer init until DOM exists to avoid appendChild(null)
+      const start = () => idw.init();
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', start, { once: true });
+      } else {
+        start();
+      }
+    });
+  </script>
 </head>
-
 
 <body>
   <header style="display:flex;justify-content:center;align-items:center;gap:16px;margin:16px 0;">
@@ -116,6 +122,7 @@
           Your Particle webhook: <code>https://nectiqdashboard.netlify.app/api/particle-webhook</code>
         </p>
       </div>
+
       <div class="grid">
         <div class="card">
           <div class="stats">
@@ -131,55 +138,126 @@
     </div>
   </main>
 
- <script>
-  document.addEventListener('DOMContentLoaded', () => {
-    const idw = window.netlifyIdentity;
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const idw = window.netlifyIdentity;
+      const API_BASE = '/api';
 
-    // buttons
-    const lb = document.getElementById('btnLogin');  if (lb && idw) lb.addEventListener('click', () => idw.open('login'));
-    const lo = document.getElementById('btnLogout'); if (lo && idw) lo.addEventListener('click', () => idw.logout());
+      // Buttons
+      const lb = document.getElementById('btnLogin');  if (lb && idw) lb.addEventListener('click', () => idw.open('login'));
+      const lo = document.getElementById('btnLogout'); if (lo && idw) lo.addEventListener('click', () => idw.logout());
+      const deviceSelect = document.getElementById('deviceSelect');
+      const devicePreview = document.getElementById('devicePreview');
 
-    const API_BASE = '/api';
+      /* ---------- Charts setup ---------- */
+      const COLOR_TEMP = '#E14E5D'; // red
+      const COLOR_HUM  = '#4EA6E1'; // blue
+      const COLOR_SND  = '#E1D24E'; // yellow
+      let tempChart, humChart, soundChart;
 
-    // define loadDevices globally so the Identity handlers can call it
-    window.loadDevices = async function loadDevices() {
-      const res = await authFetch(`${API_BASE}/devices`);
-      if (!res.ok) { console.warn('devices HTTP', res.status); return; }
-      const data = await res.json();
+      function fmtTs(ts) { return new Date(ts).toLocaleTimeString(); }
 
-      const sel = document.getElementById('deviceSelect');
-      sel.innerHTML = '';
-      (data.devices || []).forEach(d => {
-        const opt = document.createElement('option');
-        opt.value = d.device_id;
-        opt.textContent = d.name || d.device_id;
-        sel.appendChild(opt);
+      function newLineChart(ctx, label, { color, pointStyle }) {
+        return new Chart(ctx, {
+          type: 'line',
+          data: { labels: [], datasets: [{
+            label, data: [], tension: 0.25, fill: false,
+            borderColor: color, backgroundColor: color, borderWidth: 2, pointStyle,
+            pointRadius: (c) => ((c.chart?.data?.labels?.length || 0) < 2 ? 5 : 0),
+            pointHoverRadius: 5, spanGaps: true
+          }]},
+          options: {
+            responsive: true, animation: false,
+            scales: { x: { ticks: { color: '#9aa3b2' } },
+                      y: { ticks: { color: '#9aa3b2' } } },
+            plugins: {
+              legend: {
+                labels: {
+                  color: '#e6e6e6', usePointStyle: true, boxWidth: 16, boxHeight: 16, padding: 18,
+                  font: { family: 'monospace', size: 12 },
+                  generateLabels: (chart) => {
+                    const base = Chart.defaults.plugins.legend.labels.generateLabels(chart);
+                    const maxLen = Math.max(...base.map(l => l.text.length));
+                    return base.map(l => ({ ...l, text: l.text.padEnd(maxLen, ' ') }));
+                  }
+                }
+              }
+            }
+          }
+        });
+      }
+
+      tempChart  = newLineChart(document.getElementById('tempChart'),  'Temperature (°C)', { color: COLOR_TEMP, pointStyle: 'circle' });
+      humChart   = newLineChart(document.getElementById('humChart'),   'Humidity (%)',     { color: COLOR_HUM,  pointStyle: 'circle' });
+      soundChart = newLineChart(document.getElementById('soundChart'), 'Sound (dB)',       { color: COLOR_SND,  pointStyle: 'circle' });
+
+      function pushPoint(chart, x, y, max = 200) {
+        chart.data.labels.push(x);
+        chart.data.datasets[0].data.push(y);
+        if (chart.data.labels.length > max) {
+          chart.data.labels.shift();
+          chart.data.datasets[0].data.shift();
+        }
+        chart.update('none');
+      }
+
+      /* ---------- Data loaders ---------- */
+      window.loadDevices = async function loadDevices() {
+        const res = await authFetch(`${API_BASE}/devices`);
+        if (!res.ok) { console.warn('devices HTTP', res.status); return; }
+        const data = await res.json();
+
+        deviceSelect.innerHTML = '';
+        (data.devices || []).forEach(d => {
+          const opt = document.createElement('option');
+          opt.value = d.device_id;
+          opt.textContent = d.name || d.device_id;
+          deviceSelect.appendChild(opt);
+        });
+
+        if (data.devices?.length) {
+          deviceSelect.value = data.devices[0].device_id;
+          await loadHistory(deviceSelect.value);
+          const selOpt = deviceSelect.options[deviceSelect.selectedIndex];
+          devicePreview.textContent = selOpt ? `Selected device: ${selOpt.textContent}` : '';
+        }
+      };
+
+      async function loadHistory(device_id) {
+        const res = await authFetch(`${API_BASE}/readings?device_id=${encodeURIComponent(device_id)}&limit=200`);
+        if (!res.ok) { console.warn('readings HTTP', res.status); return; }
+        const data = await res.json();
+
+        // reset
+        [tempChart, humChart, soundChart].forEach(c => { c.data.labels = []; c.data.datasets[0].data = []; c.update('none'); });
+
+        (data.readings || []).forEach(r => {
+          if (r.temp_c   != null) pushPoint(tempChart,  fmtTs(r.ts), r.temp_c);
+          if (r.humidity != null) pushPoint(humChart,   fmtTs(r.ts), r.humidity);
+          if (r.sound_db != null) pushPoint(soundChart, fmtTs(r.ts), r.sound_db);
+        });
+
+        if (data.readings?.length) {
+          const last = data.readings[data.readings.length - 1];
+          document.getElementById('statTemp').textContent  = (last.temp_c   != null) ? last.temp_c.toFixed(1)  : '--';
+          document.getElementById('statHum').textContent   = (last.humidity != null) ? last.humidity.toFixed(1): '--';
+          document.getElementById('statSound').textContent = (last.sound_db != null) ? last.sound_db.toFixed(0): '--';
+        }
+      }
+
+      deviceSelect.addEventListener('change', (e) => {
+        loadHistory(e.target.value);
+        const selOpt = deviceSelect.options[deviceSelect.selectedIndex];
+        devicePreview.textContent = selOpt ? `Selected device: ${selOpt.textContent}` : '';
       });
 
-      if (data.devices?.length) {
-        sel.value = data.devices[0].device_id;
-        await loadHistory(sel.value);
-        const selectedOption = sel.options[sel.selectedIndex];
-        document.getElementById('devicePreview').textContent =
-          selectedOption ? `Selected device: ${selectedOption.textContent}` : '';
-      }
-    };
+      document.getElementById('refreshBtn').addEventListener('click', () => {
+        const u = idw?.currentUser?.();
+        if (u) loadDevices(); // only if logged in
+      });
 
-    async function loadHistory(device_id) {
-      const res = await authFetch(`${API_BASE}/readings?device_id=${encodeURIComponent(device_id)}&limit=200`);
-      if (!res.ok) { console.warn('readings HTTP', res.status); return; }
-      const data = await res.json();
-      // … update charts/stats …
-    }
-
-    document.getElementById('deviceSelect').addEventListener('change', (e) => {
-      loadHistory(e.target.value);
+      // DO NOT call loadDevices() here; Identity handlers will call it when a user exists.
     });
-
-    // IMPORTANT: don't call loadDevices() here.
-    // Identity init handler will call it if a user is present.
-  });
-</script>
-
+  </script>
 </body>
 </html>
