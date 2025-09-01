@@ -9,11 +9,11 @@
   <link rel="stylesheet" href="style.css" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 
-  <!-- Netlify Identity widget (load ONCE) -->
+  <!-- Load Netlify Identity ONCE -->
   <script src="https://identity.netlify.com/v1/netlify-identity-widget.js"></script>
 
   <script>
-    /* ---------- global helpers (define once) ---------- */
+    /* ---------- GLOBAL HELPERS (define once) ---------- */
     const $ = (s) => document.querySelector(s);
 
     async function authFetch(url, opts = {}) {
@@ -40,7 +40,7 @@
       whoami.textContent   = u ? `Signed in as ${u.email}` : '';
     }
 
-    // Wait for Identity to exist, then init & wire
+    // Wait for Identity, then init once
     (function waitForIdentity(cb){
       if (window.netlifyIdentity) return cb(window.netlifyIdentity);
       setTimeout(() => waitForIdentity(cb), 50);
@@ -52,10 +52,10 @@
         idw.__nectiqWired = true;
       }
       idw.init();
-      // Buttons may not exist yet; will wire again after DOMContentLoaded
     });
   </script>
 </head>
+
 <body>
   <header style="display:flex;justify-content:center;align-items:center;gap:16px;margin:16px 0;">
     <div><img src="logo.png" alt="" style="width:50px;height:50px;object-fit:contain;border-radius:25px;zoom:1.8;" /></div>
@@ -97,106 +97,105 @@
   </main>
 
   <script>
-    const API_BASE = '/api';
-    let tempChart, humChart, soundChart;
-    let currentDevice;
+    // Wire login/logout after DOM is ready
+    document.addEventListener('DOMContentLoaded', () => {
+      const idw = window.netlifyIdentity;
+      const lb = $('#btnLogin');  if (lb && idw) lb.addEventListener('click', () => idw.open('login'));
+      const lo = $('#btnLogout'); if (lo && idw) lo.addEventListener('click', () => idw.logout());
 
-    const COLOR_TEMP = '#E14E5D';
-    const COLOR_HUM  = '#4EA6E1';
-    const COLOR_SND  = '#E1D24E';
+      const API_BASE = '/api';
+      let tempChart, humChart, soundChart;
+      let currentDevice;
 
-    const fmtTs = (ts) => new Date(ts).toLocaleTimeString();
+      const COLOR_TEMP = '#E14E5D';
+      const COLOR_HUM  = '#4EA6E1';
+      const COLOR_SND  = '#E1D24E';
 
-    function newLineChart(ctx, label, { color, pointStyle }) {
-      return new Chart(ctx, {
-        type: 'line',
-        data: { labels: [], datasets: [{
-          label, data: [], tension: 0.25, fill: false,
-          borderColor: color, backgroundColor: color, borderWidth: 2,
-          pointStyle,
-          pointRadius: (ctx) => (ctx.chart?.data?.labels?.length || 0) < 2 ? 5 : 0,
-          pointHoverRadius: 5, spanGaps: true
-        }]},
-        options: {
-          responsive: true, animation: false,
-          scales: { x: { ticks: { color: '#9aa3b2' } }, y: { ticks: { color: '#9aa3b2' } } },
-          plugins: {
-            legend: {
-              labels: {
-                color: '#e6e6e6', usePointStyle: true, boxWidth: 16, boxHeight: 16, padding: 18,
-                font: { family: 'monospace', size: 12 },
-                generateLabels: (chart) => {
-                  const labels = Chart.defaults.plugins.legend.labels.generateLabels(chart);
-                  const maxLen = Math.max(...labels.map(l => l.text.length));
-                  return labels.map(l => ({ ...l, text: l.text.padEnd(maxLen, ' ') }));
+      const fmtTs = (ts) => new Date(ts).toLocaleTimeString();
+
+      function newLineChart(ctx, label, { color, pointStyle }) {
+        return new Chart(ctx, {
+          type: 'line',
+          data: { labels: [], datasets: [{
+            label, data: [], tension: 0.25, fill: false,
+            borderColor: color, backgroundColor: color, borderWidth: 2,
+            pointStyle,
+            pointRadius: (ctx) => (ctx.chart?.data?.labels?.length || 0) < 2 ? 5 : 0,
+            pointHoverRadius: 5, spanGaps: true
+          }]},
+          options: {
+            responsive: true, animation: false,
+            scales: { x: { ticks: { color: '#9aa3b2' } }, y: { ticks: { color: '#9aa3b2' } } },
+            plugins: {
+              legend: {
+                labels: {
+                  color: '#e6e6e6', usePointStyle: true, boxWidth: 16, boxHeight: 16, padding: 18,
+                  font: { family: 'monospace', size: 12 },
+                  generateLabels: (chart) => {
+                    const labels = Chart.defaults.plugins.legend.labels.generateLabels(chart);
+                    const maxLen = Math.max(...labels.map(l => l.text.length));
+                    return labels.map(l => ({ ...l, text: l.text.padEnd(maxLen, ' ') }));
+                  }
                 }
               }
             }
           }
+        });
+      }
+
+      function pushPoint(chart, x, y, max = 200) {
+        chart.data.labels.push(x);
+        chart.data.datasets[0].data.push(y);
+        if (chart.data.labels.length > max) {
+          chart.data.labels.shift();
+          chart.data.datasets[0].data.shift();
         }
-      });
-    }
-
-    function pushPoint(chart, x, y, max = 200) {
-      chart.data.labels.push(x);
-      chart.data.datasets[0].data.push(y);
-      if (chart.data.labels.length > max) {
-        chart.data.labels.shift();
-        chart.data.datasets[0].data.shift();
+        chart.update('none');
       }
-      chart.update('none');
-    }
 
-    async function loadDevices() {
-      const res  = await authFetch(`${API_BASE}/devices`);   // << use authFetch
-      if (!res.ok) { console.warn('devices HTTP', res.status); return; }
-      const data = await res.json();
-      const sel = $('#deviceSelect');
-      sel.innerHTML = '';
-      (data.devices || []).forEach(d => {
-        const opt = document.createElement('option');
-        opt.value = d.device_id;
-        opt.textContent = d.name || d.device_id;
-        sel.appendChild(opt);
-      });
-      if (data.devices?.length && !currentDevice) {
-        currentDevice = data.devices[0].device_id;
-        sel.value = currentDevice;
-        await loadHistory(currentDevice);
+      async function loadDevices() {
+        const res = await authFetch(`${API_BASE}/devices`);
+        if (!res.ok) { console.warn('devices HTTP', res.status); return; }
+        const data = await res.json();
+        const sel = $('#deviceSelect');
+        sel.innerHTML = '';
+        (data.devices || []).forEach(d => {
+          const opt = document.createElement('option');
+          opt.value = d.device_id;
+          opt.textContent = d.name || d.device_id;
+          sel.appendChild(opt);
+        });
+        if (data.devices?.length && !currentDevice) {
+          currentDevice = data.devices[0].device_id;
+          sel.value = currentDevice;
+          await loadHistory(currentDevice);
+        }
+        const selectedOption = sel.options[sel.selectedIndex];
+        $('#devicePreview').textContent = selectedOption ? `Selected device: ${selectedOption.textContent}` : '';
       }
-      // update preview
-      const selectedOption = sel.options[sel.selectedIndex];
-      $('#devicePreview').textContent = selectedOption ? `Selected device: ${selectedOption.textContent}` : '';
-    }
 
-    async function loadHistory(device_id) {
-      const res  = await authFetch(`${API_BASE}/readings?device_id=${encodeURIComponent(device_id)}&limit=200`); // << use authFetch
-      if (!res.ok) { console.warn('readings HTTP', res.status); return; }
-      const data = await res.json();
+      async function loadHistory(device_id) {
+        const res = await authFetch(`${API_BASE}/readings?device_id=${encodeURIComponent(device_id)}&limit=200`);
+        if (!res.ok) { console.warn('readings HTTP', res.status); return; }
+        const data = await res.json();
 
-      for (const c of [tempChart, humChart, soundChart]) {
-        c.data.labels = [];
-        c.data.datasets[0].data = [];
-        c.update();
+        for (const c of [tempChart, humChart, soundChart]) {
+          c.data.labels = [];
+          c.data.datasets[0].data = [];
+          c.update();
+        }
+        (data.readings || []).forEach(r => {
+          if (r.temp_c   != null) pushPoint(tempChart,  fmtTs(r.ts), r.temp_c);
+          if (r.humidity != null) pushPoint(humChart,   fmtTs(r.ts), r.humidity);
+          if (r.sound_db != null) pushPoint(soundChart, fmtTs(r.ts), r.sound_db);
+        });
+        if (data.readings?.length) {
+          const last = data.readings[data.readings.length - 1];
+          $('#statTemp').textContent  = (last.temp_c   != null) ? last.temp_c.toFixed(1)  : '--';
+          $('#statHum').textContent   = (last.humidity != null) ? last.humidity.toFixed(1): '--';
+          $('#statSound').textContent = (last.sound_db != null) ? last.sound_db.toFixed(0): '--';
+        }
       }
-      (data.readings || []).forEach(r => {
-        if (r.temp_c   != null) pushPoint(tempChart,  fmtTs(r.ts), r.temp_c);
-        if (r.humidity != null) pushPoint(humChart,   fmtTs(r.ts), r.humidity);
-        if (r.sound_db != null) pushPoint(soundChart, fmtTs(r.ts), r.sound_db);
-      });
-      if (data.readings?.length) {
-        const last = data.readings[data.readings.length - 1];
-        $('#statTemp').textContent  = (last.temp_c   != null) ? last.temp_c.toFixed(1)  : '--';
-        $('#statHum').textContent   = (last.humidity != null) ? last.humidity.toFixed(1): '--';
-        $('#statSound').textContent = (last.sound_db != null) ? last.sound_db.toFixed(0): '--';
-      }
-    }
-
-    document.addEventListener('DOMContentLoaded', () => {
-      // wire login/logout buttons (Identity already init'd)
-      const idw = window.netlifyIdentity;
-      const lb = $('#btnLogin');  if (lb && idw) lb.addEventListener('click', () => idw.open('login'));
-      const lo = $('#btnLogout'); if (lo && idw) lo.addEventListener('click', () => idw.logout());
 
       tempChart  = newLineChart($('#tempChart'),  'Temperature (°C)', { color: COLOR_TEMP, pointStyle: 'circle' });
       humChart   = newLineChart($('#humChart'),   'Humidity (%)',     { color: COLOR_HUM,  pointStyle: 'circle' });
@@ -208,7 +207,7 @@
       });
       $('#refreshBtn').addEventListener('click', loadDevices);
 
-      loadDevices();  // will call authFetch
+      loadDevices();
     });
   </script>
 </body>
