@@ -1,0 +1,13 @@
+{
+  "name": "nectiqnode-netlify-neon",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "echo 'No build step'",
+    "dev": "netlify dev"
+  },
+  "dependencies": {
+    "pg": "^8.16.3"
+  }
+}

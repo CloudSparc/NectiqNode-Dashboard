@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NectiqNode Monitor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+
+</head>
+<body>
+  <header>
+    <div>
+      <img src="logo.png" alt="" style="width:50px;height:50px;object-fit:contain; border-radius: 25px; zoom: 1.8;" />
+    </div>
+    <div class="brand">NectiqNode Monitor</div>
+  </header>
+  <main>
+    <div class="row">
+      <div class="card">
+        <h3 style="margin-top:0">Devices</h3>
+        <select style="width: 200px; padding: 8px; border: 1px solid #3c3939; border-radius: 4px;" id="deviceSelect">
+          <!-- Options will be dynamically populated by loadDevices() -->
+        </select>
+        <div style="margin-top:12px">
+          <button id="refreshBtn">Reload devices</button>
+        </div>
+        <div id="devicePreview" style="margin-top:8px; font-size:13px; color:#4EA6E1;">
+          <!-- Device name preview will appear here -->
+        </div>
+        <script>
+          // Add device preview update
+          function updateDevicePreview() {
+            const sel = document.getElementById('deviceSelect');
+            const preview = document.getElementById('devicePreview');
+            const selectedOption = sel.options[sel.selectedIndex];
+            preview.textContent = selectedOption ? `Selected device: ${selectedOption.textContent}` : '';
+          }
+
+          // Update preview on device change
+          document.addEventListener('DOMContentLoaded', () => {
+            const sel = document.getElementById('deviceSelect');
+            sel.addEventListener('change', updateDevicePreview);
+            // Initial preview after devices load
+            const origLoadDevices = loadDevices;
+            window.loadDevices = async function() {
+              await origLoadDevices();
+              updateDevicePreview();
+            };
+          });
+        </script>
+        <p class="muted" style="margin-top:12px; font-size: 9.5px;">
+          Your Particle webhook: <code>https://nectiqdashboard.netlify.app/api/particle-webhook</code><br/>
+        </p>
+      </div>
+      <div class="grid">
+        <div class="card">
+          <div class="stats">
+            <div class="stat"><div class="muted">Temperature (°C)</div><div id="statTemp" style="font-size:1.6rem;font-weight:800">--</div></div>
+            <div class="stat"><div class="muted">Humidity (%)</div><div id="statHum" style="font-size:1.6rem;font-weight:800">--</div></div>
+            <div class="stat"><div class="muted">Sound (dB)</div><div id="statSound" style="font-size:1.6rem;font-weight:800">--</div></div>
+          </div>
+        </div>
+        <div class="card"><canvas id="tempChart" height="110"></canvas></div>
+        <div class="card"><canvas id="humChart" height="110"></canvas></div>
+        <div class="card"><canvas id="soundChart" height="110"></canvas></div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+  const API_BASE = '/api';
+  const $ = (s) => document.querySelector(s);
+  let tempChart, humChart, soundChart;
+  let currentDevice;
+
+  // Brand colors
+  const COLOR_TEMP = '#E14E5D';  // light red
+  const COLOR_HUM  = '#4EA6E1';  // light blue
+  const COLOR_SND  = '#E1D24E';  // muted gray (good contrast on dark bg)
+
+  function fmtTs(ts) { return new Date(ts).toLocaleTimeString(); }
+
+  function newLineChart(ctx, label, { color, pointStyle }) {
+  return new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [{
+        label,
+        data: [],
+        tension: 0.25,
+        fill: false,
+        borderColor: color,
+        backgroundColor: color,   // legend marker color
+        borderWidth: 2,
+        pointStyle,               // legend marker shape
+        pointRadius: 0,           // no points on line
+        pointHoverRadius: 3
+      }]
+    },
+    options: {
+      responsive: true,
+      animation: false,
+      scales: {
+        x: { ticks: { color: '#9aa3b2' } },
+        y: { ticks: { color: '#9aa3b2' } }
+      },
+      plugins: {
+        legend: {
+          labels: {
+            color: '#e6e6e6',
+            usePointStyle: true,
+            boxWidth: 16,
+            boxHeight: 16,
+            padding: 18,
+            font: {
+              family: 'monospace', // makes spaces equal width
+              size: 12
+            },
+            generateLabels: (chart) => {
+              const labels = Chart.defaults.plugins.legend.labels.generateLabels(chart);
+              // Find the longest label length
+              const maxLen = Math.max(...labels.map(l => l.text.length));
+              // Pad all labels so markers align in a straight column
+              return labels.map(l => ({
+                ...l,
+                text: l.text.padEnd(maxLen, ' ')
+              }));
+            }
+          }
+        }
+      }
+    }
+  });
+}
+
+
+  function pushPoint(chart, x, y, max = 200) {
+    chart.data.labels.push(x);
+    chart.data.datasets[0].data.push(y);
+    if (chart.data.labels.length > max) {
+      chart.data.labels.shift();
+      chart.data.datasets[0].data.shift();
+    }
+    chart.update();
+  }
+
+  async function loadDevices() {
+    const res = await fetch(`${API_BASE}/devices`);
+    const data = await res.json();
+    const sel = $('#deviceSelect');
+    sel.innerHTML = '';
+    (data.devices || []).forEach(d => {
+      const opt = document.createElement('option');
+      opt.value = d.device_id;
+      opt.textContent = d.name || d.device_id;
+      sel.appendChild(opt);
+    });
+    if (data.devices?.length && !currentDevice) {
+      currentDevice = data.devices[0].device_id;
+      sel.value = currentDevice;
+      await loadHistory(currentDevice);
+    }
+  }
+
+  async function loadHistory(device_id) {
+    const res = await fetch(`${API_BASE}/readings?device_id=${encodeURIComponent(device_id)}&limit=200`);
+    const data = await res.json();
+    // reset datasets
+    for (const c of [tempChart, humChart, soundChart]) {
+      c.data.labels = [];
+      c.data.datasets[0].data = [];
+      c.update();
+    }
+    (data.readings || []).forEach(r => {
+      if (r.temp_c    != null) pushPoint(tempChart,  fmtTs(r.ts), r.temp_c);
+      if (r.humidity  != null) pushPoint(humChart,   fmtTs(r.ts), r.humidity);
+      if (r.sound_db  != null) pushPoint(soundChart, fmtTs(r.ts), r.sound_db);
+    });
+    if (data.readings?.length) {
+      const last = data.readings[data.readings.length - 1];
+      $('#statTemp').textContent  = (last.temp_c   != null) ? last.temp_c.toFixed(1)  : '--';
+      $('#statHum').textContent   = (last.humidity != null) ? last.humidity.toFixed(1): '--';
+      $('#statSound').textContent = (last.sound_db != null) ? last.sound_db.toFixed(0): '--';
+    }
+  }
+
+  window.addEventListener('DOMContentLoaded', () => {
+    tempChart  = newLineChart(document.getElementById('tempChart'),  'Temperature (°C)', { color: COLOR_TEMP, pointStyle: 'circle' });
+    humChart   = newLineChart(document.getElementById('humChart'),   'Humidity (%)',     { color: COLOR_HUM,  pointStyle: 'circle' });
+    soundChart = newLineChart(document.getElementById('soundChart'), 'Sound (dB)',       { color: COLOR_SND,  pointStyle: 'circle' });
+
+    $('#deviceSelect').addEventListener('change', (e) => { currentDevice = e.target.value; loadHistory(currentDevice); });
+    $('#refreshBtn').addEventListener('click', loadDevices);
+    loadDevices();
+  });
+</script>
+
+
+</body>
+</html>
