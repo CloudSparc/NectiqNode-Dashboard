@@ -1,48 +1,102 @@
-// _auth.js (only the JWKS URL logic shown here)
-import jwt from 'jsonwebtoken';
+// functions/_auth.js
+import { createRemoteJWKSet, jwtVerify } from 'jose';
 
-async function fetchJson(url) {
-  const r = await fetch(url, { redirect: 'follow' });
-  if (!r.ok) throw new Error(`JWKS fetch failed ${r.status}`);
-  return r.json();
+// Where your site is hosted (Netlify sets one of these at build/runtime)
+const SITE_URL =
+  process.env.URL ||
+  process.env.DEPLOY_PRIME_URL ||
+  'https://nectiqdashboard.netlify.app';
+
+// Netlify Identity issuer for this site
+function issuerUrl() {
+  return `${SITE_URL.replace(/\/$/, '')}/.netlify/identity`;
 }
 
-async function getJwksForIssuer(iss) {
-  // Try the Identity path first, then fall back to the root path
-  const identityJwks = `${iss.replace(/\/$/, '')}/.well-known/jwks.json`;
-  const rootJwks     = `${iss.replace('/.netlify/identity', '').replace(/\/$/, '')}/.well-known/jwks.json`;
+// Build a remote JWKS fetcher. Some stacks expose JWKS at the root as well,
+// so we try identity first, then root.
+function jwksFetcher() {
+  const iss = issuerUrl();
+  const identityJWKS = new URL('/.well-known/jwks.json', iss).toString();
+  const rootJWKS = new URL('/.well-known/jwks.json', SITE_URL).toString();
 
-  try {
-    return await fetchJson(identityJwks);
-  } catch (_) {
-    return await fetchJson(rootJwks);
-  }
+  // We'll return a function that first tries identity JWKS; if that fails during
+  // verification, we try the root JWKS path.
+  const primary = createRemoteJWKSet(new URL(identityJWKS));
+  const fallback = createRemoteJWKSet(new URL(rootJWKS));
+
+  return async (protectedHeader, token) => {
+    try {
+      return await primary(protectedHeader, token);
+    } catch {
+      return await fallback(protectedHeader, token);
+    }
+  };
 }
 
+const JWKS = jwksFetcher();
+
+/**
+ * Verify an Authorization: Bearer <jwt> header against Netlify Identity.
+ * Returns `{ id, email, app_metadata }` on success, or `null` on failure.
+ */
 export async function verifyNetlifyJwt(authorization) {
-  if (!authorization?.startsWith('Bearer ')) return { user: null, reason: 'no bearer' };
-
-  const token = authorization.slice('Bearer '.length);
-
-  // Decode header/payload without verifying to get `iss` & `kid`
-  const [ , payloadB64, ] = token.split('.');
-  const payload = JSON.parse(Buffer.from(payloadB64.replace(/-/g,'+').replace(/_/g,'/'), 'base64').toString('utf8'));
-
-  const iss = payload.iss;                    // e.g. https://<site>/.netlify/identity  OR  https://<site>
-  const jwks = await getJwksForIssuer(iss);
-
-  const header = JSON.parse(Buffer.from(token.split('.')[0].replace(/-/g,'+').replace(/_/g,'/'), 'base64').toString('utf8'));
-  const kid = header.kid;
-
-  const jwk = jwks.keys.find(k => k.kid === kid);
-  if (!jwk) return { user: null, reason: 'kid not found' };
-
-  // Build PEM from JWK (RSA) – minimal version:
-  const pub = jwkToPem(jwk); // use a helper like 'jwk-to-pem' or your own builder
-  try {
-    const verified = jwt.verify(token, pub, { algorithms: ['RS256'], issuer: iss.includes('/.netlify/identity') ? iss : `${iss}/.netlify/identity` });
-    return { user: { id: verified.sub, email: verified.email }, raw: verified };
-  } catch (e) {
-    return { user: null, reason: e.message };
+  if (!authorization || !authorization.toLowerCase().startsWith('bearer ')) {
+    return null;
   }
+  const token = authorization.slice(7); // strip "Bearer "
+
+  try {
+    const { payload } = await jwtVerify(token, JWKS, {
+      algorithms: ['RS256'],
+      issuer: issuerUrl(), // expected iss in the token
+    });
+
+    return {
+      id: payload.sub,
+      email: payload.email,
+      app_metadata: payload.app_metadata || {},
+    };
+  } catch (err) {
+    // console.warn('JWT verify failed:', err?.message);
+    return null;
+  }
+}
+
+/**
+ * Extracts the user from a Netlify function event (Authorization header).
+ * Returns the user object or null.
+ */
+export async function getUserFromEvent(event) {
+  const auth =
+    event.headers?.authorization ||
+    event.headers?.Authorization ||
+    event.multiValueHeaders?.authorization?.[0] ||
+    event.multiValueHeaders?.Authorization?.[0];
+
+  return await verifyNetlifyJwt(auth);
+}
+
+/**
+ * Require a valid user for a function.
+ * - Resolves with the `user` object if authorized
+ * - Throws an object `{ statusCode, body }` you can `catch` and `return` for 401 cases
+ *
+ * Usage:
+ *   try {
+ *     const user = await requireUser(event);
+ *     // ...authorized work...
+ *   } catch (resp) {
+ *     return resp; // 401 response
+ *   }
+ */
+export async function requireUser(event) {
+  const user = await getUserFromEvent(event);
+  if (!user) {
+    throw {
+      statusCode: 401,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ error: 'Unauthorized' }),
+    };
+  }
+  return user;
 }
