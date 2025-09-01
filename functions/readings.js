@@ -1,15 +1,13 @@
-// /netlify/functions/readings.js
+// functions/readings.js
 import { requireUser } from "./_auth.js";
-import { getClient } from "./db.js";
+import { getClient } from "./utils/db.js";
 
 function parseSince(since) {
   if (!since) return null;
-  // crude parser: "24h", "7d"
   const m = /^(\d+)([hd])$/i.exec(since);
   if (!m) return null;
   const n = parseInt(m[1], 10);
-  const unit = m[2].toLowerCase();
-  const ms = unit === "h" ? n * 3600_000 : n * 24 * 3600_000;
+  const ms = m[2].toLowerCase() === "h" ? n * 3600_000 : n * 24 * 3600_000;
   return new Date(Date.now() - ms);
 }
 
@@ -20,13 +18,10 @@ export const handler = async (event) => {
   try {
     const deviceId = event.queryStringParameters?.device_id;
     const sinceStr = event.queryStringParameters?.since;
-    if (!deviceId) {
-      return { statusCode: 400, body: JSON.stringify({ ok: false, error: "device_id is required" }) };
-    }
+    if (!deviceId) return { statusCode: 400, body: JSON.stringify({ ok: false, error: "device_id is required" }) };
 
     const db = await getClient();
 
-    // Guard: ensure user has access to this device
     const hasAccess = await db.query(
       `SELECT 1 FROM device_users WHERE device_id = $1 AND user_id = $2`,
       [deviceId, user.id]
@@ -37,8 +32,7 @@ export const handler = async (event) => {
 
     const since = parseSince(sinceStr);
     const params = [deviceId];
-    let sql = `SELECT ts, temp_c, humidity, sound_db
-               FROM readings WHERE device_id = $1`;
+    let sql = `SELECT ts, temp_c, humidity, sound_db FROM readings WHERE device_id = $1`;
     if (since) {
       params.push(since.toISOString());
       sql += ` AND ts >= $2`;
