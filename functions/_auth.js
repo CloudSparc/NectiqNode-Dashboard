@@ -1,41 +1,42 @@
 // functions/_auth.js
 import jwt from "jsonwebtoken";
 import jwksClient from "jwks-rsa";
-import fetch from "cross-fetch";
 import { getClient } from "./utils/db.js";
 
 const JWKS_URI = process.env.NETLIFY_IDENTITY_JWKS;
 
-const client = jwksClient({ jwksUri: JWKS_URI });
+let jwks;
+if (JWKS_URI) {
+  jwks = jwksClient({ jwksUri: JWKS_URI });
+}
 
 function getKey(header, callback) {
-  client.getSigningKey(header.kid, function (err, key) {
+  if (!jwks) return callback(new Error("NETLIFY_IDENTITY_JWKS not set"));
+  jwks.getSigningKey(header.kid, (err, key) => {
     if (err) return callback(err);
-    const signingKey = key.getPublicKey();
-    callback(null, signingKey);
+    callback(null, key.getPublicKey());
   });
 }
 
 export async function requireUser(event) {
   try {
     const auth = event.headers.authorization || event.headers.Authorization;
-    if (!auth || !auth.startsWith("Bearer ")) {
+    if (!auth?.startsWith("Bearer ")) {
       return { error: { statusCode: 401, message: "Missing Bearer token" } };
     }
+    if (!JWKS_URI) {
+      return { error: { statusCode: 500, message: "Server auth misconfigured (JWKS missing)" } };
+    }
 
-    const token = auth.slice("Bearer ".length);
+    const token = auth.slice(7);
     const decoded = await new Promise((resolve, reject) => {
-      jwt.verify(
-        token,
-        getKey,
-        { algorithms: ["RS256", "HS256"] },
-        (err, payload) => (err ? reject(err) : resolve(payload))
+      jwt.verify(token, getKey, { algorithms: ["RS256"] }, (err, payload) =>
+        err ? reject(err) : resolve(payload)
       );
     });
 
     const userId = decoded.sub || decoded.user_id || decoded.id;
     const email = decoded.email || decoded.user_metadata?.email || decoded?.email;
-
     if (!userId || !email) {
       return { error: { statusCode: 401, message: "Invalid token: missing id/email" } };
     }
