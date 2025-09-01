@@ -4,20 +4,111 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>NectiqNode Monitor</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 
+  <!-- Netlify Identity widget -->
+  <script src="https://identity.netlify.com/v1/netlify-identity-widget.js"></script>
+
+  <script>
+    const $ = (s) => document.querySelector(s);
+
+    // helper available to all scripts
+    
+
+   // safe auth helpers
+function refreshAuthUI() {
+  const idw = window.netlifyIdentity;
+  if (!idw) return;
+  const u = idw.currentUser();
+  $('#btnLogin').style.display  = u ? 'none' : '';
+  $('#btnLogout').style.display = u ? '' : 'none';
+  $('#whoami').textContent      = u ? `Signed in as ${u.email}` : '';
+}
+
+async function authFetch(url, opts = {}) {
+  const idw = window.netlifyIdentity;
+  const u = idw ? idw.currentUser() : null;
+  if (u) {
+    const token = await u.jwt();
+    opts.headers = { ...(opts.headers || {}), Authorization: `Bearer ${token}` };
+  }
+  return fetch(url, opts);
+}
+
+// usage stays the same:
+const res = await authFetch(`${API_BASE}/devices`);
+
+
+    // expose for your other code
+    window.authFetch = authFetch;
+
+    // init identity + wire buttons when DOM is ready
+    document.addEventListener('DOMContentLoaded', () => {
+      const idw = window.netlifyIdentity;
+      if (!idw) return;
+
+      idw.on('init',  refreshAuthUI);
+      idw.on('login', () => { refreshAuthUI(); location.reload(); });
+      idw.on('logout', () => { refreshAuthUI(); location.reload(); });
+      idw.init();
+
+      $('#btnLogin').addEventListener('click', () => idw.open('login'));
+      $('#btnLogout').addEventListener('click', () => idw.logout());
+    });
+  </script>
 </head>
+
 <body>
-  <header>
-    <div>
-      <img src="logo.png" alt="" style="width:50px;height:50px;object-fit:contain; border-radius: 25px; zoom: 1.8;" />
-    </div>
+  <header style="display:flex;justify-content:center;align-items:center;gap:16px;margin:16px 0;">
+    <div><img src="logo.png" alt="" style="width:50px;height:50px;object-fit:contain;border-radius:25px;zoom:1.8;" /></div>
     <div class="brand">NectiqNode Monitor</div>
   </header>
+
+  <div id="authBar" style="display:flex;gap:8px;align-items:center;margin:8px 0;justify-content:flex-end;">
+    <button id="btnLogin"  style="padding:5px 10px;border:none;border-radius:4px;background:#E0C051;color:#212529;cursor:pointer">Log in</button>
+    <button id="btnLogout" style="display:none;padding:5px 10px;border:none;border-radius:4px;background:#E0C051;color:#212529;cursor:pointer">Log out</button>
+    <span id="whoami" class="muted"></span>
+  </div>
+
+  <!-- … the rest of your page … -->
+
+<script>
+  // Netlify Identity widget
+  const idw = window.netlifyIdentity;
+
+  function refreshAuthUI() {
+    const u = idw.currentUser();
+    document.querySelector('#btnLogin').style.display = u ? 'none' : '';
+    document.querySelector('#btnLogout').style.display = u ? '' : 'none';
+    document.querySelector('#whoami').textContent = u ? `Signed in as ${u.email}` : '';
+  }
+
+  idw.on('init', refreshAuthUI);
+  idw.on('login', () => { refreshAuthUI(); location.reload(); });
+  idw.on('logout', () => { refreshAuthUI(); location.reload(); });
+  idw.init();
+
+  $('#btnLogin').onclick  = () => idw.open('login');
+  $('#btnLogout').onclick = () => idw.logout();
+
+  // attach JWT to your existing fetches:
+  async function authFetch(url, opts={}) {
+    const u = idw.currentUser();
+    if (u) {
+      const token = await u.jwt();                 // Netlify Identity JWT
+      opts.headers = { ...(opts.headers||{}), Authorization: `Bearer ${token}` };
+    }
+    return fetch(url, opts);
+  }
+
+  // Replace fetch(...) calls in your code:
+  // const res = await fetch(`${API_BASE}/devices`);
+  //     becomes:
+  // const res = await authFetch(`${API_BASE}/devices`);
+</script>
   <main>
     <div class="row">
       <div class="card">
@@ -73,7 +164,6 @@
 
   <script>
   const API_BASE = '/api';
-  const $ = (s) => document.querySelector(s);
   let tempChart, humChart, soundChart;
   let currentDevice;
 
