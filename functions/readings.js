@@ -1,37 +1,36 @@
 // functions/readings.js
-import { requireUser, hasRole } from './_auth.js';
-import { sql } from './utils/db.js';
+import { requireUser } from './_auth.js';
+import { query } from './utils/db.js';
 
-export default async (event) => {
-  const { user, error } = requireUser(event);
-  if (error) return error;
+export async function handler(event) {
+  const [user, err] = await requireUser(event);
+  if (err) return err;
 
-  const url = new URL(event.rawUrl || `http://x${event.path}?${event.queryStringParameters ?? ''}`);
-  const device_id = url.searchParams.get('device_id');
-  const limit = Math.min(Number(url.searchParams.get('limit') || 200), 1000);
+  const p = new URLSearchParams(event.queryStringParameters || {});
+  const device_id = p.get('device_id');
+  const limit = Math.min(parseInt(p.get('limit') || '200', 10), 200);
 
-  if (!device_id)
-    return new Response(JSON.stringify({ error: 'device_id required' }), { status: 400 });
+  if (!device_id) return { statusCode: 400, body: 'device_id required' };
 
-  // authZ: admins can read any; others only their devices
-  const isAdmin = hasRole(user, 'admin');
-  if (!isAdmin) {
-    const allowed = await sql`
-      select 1 from device_users
-      where device_id = ${device_id} and user_id = ${user.sub} limit 1`;
-    if (allowed.length === 0) {
-      return new Response(JSON.stringify({ error: 'Forbidden' }), { status: 403 });
-    }
+  // Optional guard: only allow if the user has access to this device
+  const own = await query`
+    SELECT 1 FROM device_users WHERE device_id = ${device_id} AND user_id = ${user.id}::uuid
+  `;
+  if (own.rowCount === 0) {
+    return { statusCode: 403, body: 'Forbidden (no access to device)' };
   }
 
-  const readings = await sql`
-    select ts, temp_c, humidity, sound_db
-    from readings
-    where device_id = ${device_id}
-    order by ts asc
-    limit ${limit}`;
+  const { rows } = await query`
+    SELECT ts, temp_c, humidity, sound_db
+    FROM readings
+    WHERE device_id = ${device_id}
+    ORDER BY ts ASC
+    LIMIT ${limit}
+  `;
 
-  return new Response(JSON.stringify({ readings }), {
-    headers: { 'Content-Type': 'application/json' }
-  });
-};
+  return {
+    statusCode: 200,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ readings: rows }),
+  };
+}
