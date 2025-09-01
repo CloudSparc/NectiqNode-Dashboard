@@ -112,27 +112,33 @@
 
     });
   </script>
-  <script>
+ <!-- index.html -->
+<script>
   async function getToken() {
-    // Using Netlify Identity widget (gotrue). Ensure widget is initialized on your page.
-    // window.netlifyIdentity must be available.
-    const user = window.netlifyIdentity?.currentUser();
+    const user = window.netlifyIdentity?.currentUser?.();
     if (!user) return null;
     return await user.jwt();
   }
 
-  export async function apiFetch(path, options = {}) {
+  async function apiFetch(path, options = {}) {
     const token = await getToken();
     const headers = { ...(options.headers || {}), "Content-Type": "application/json" };
     if (token) headers.Authorization = `Bearer ${token}`;
     const res = await fetch(path, { ...options, headers });
-    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-    return res.json();
+    // try to read JSON error for debugging
+    let body;
+    try { body = await res.json(); } catch { body = { raw: await res.text() }; }
+    if (!res.ok) {
+      console.warn("API error", res.status, body);
+      throw new Error(`${res.status} ${res.statusText}`);
+    }
+    return body;
   }
 
-  // Example usage:
-  // apiFetch("/api/whoami").then(console.log).catch(console.error);
+  // Make available globally
+  window.apiFetch = apiFetch;
 </script>
+
 
 </head>
 
