@@ -1,29 +1,24 @@
 // functions/devices.js
-import { requireUser, hasRole } from './_auth.js';
-import { sql } from './utils/db.js'; // your existing PG helper
+import { requireUser } from './_auth.js';
+import { query } from './utils/db.js';
 
-export default async (event) => {
-  const { user, error } = requireUser(event);
-  if (error) return error;
+export async function handler(event) {
+  const [user, err] = await requireUser(event);
+  if (err) return err;
 
-  // upsert user (first seen)
-  await sql`insert into users (id, email)
-            values (${user.sub}, ${user.email})
-            on conflict (id) do update set email = excluded.email`;
+  // Return only devices the user has access to
+  const { rows } = await query`
+    SELECT d.device_id, d.name
+    FROM device_users du
+    JOIN devices d ON d.device_id = du.device_id
+    WHERE du.user_id = ${user.id}::uuid
+    ORDER BY COALESCE(d.name, d.device_id)
+  `;
 
-  const isAdmin = hasRole(user, 'admin');
-
-  const rows = isAdmin
-    ? await sql`select device_id, coalesce(name, device_id) as name
-                from devices order by name`
-    : await sql`
-        select d.device_id, coalesce(d.name, d.device_id) as name
-        from device_users du
-        join devices d on d.device_id = du.device_id
-        where du.user_id = ${user.sub}
-        order by name`;
-
-  return new Response(JSON.stringify({ devices: rows }), {
-    headers: { 'Content-Type': 'application/json' }
-  });
-};
+  // Important: 200 with empty list is OK (don’t return 401)
+  return {
+    statusCode: 200,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ devices: rows }),
+  };
+}
