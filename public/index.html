@@ -13,7 +13,6 @@
   <script src="https://identity.netlify.com/v1/netlify-identity-widget.js"></script>
 
   <script>
-    const $ = (s) => document.querySelector(s);
 
     // helper available to all scripts
     
@@ -60,6 +59,60 @@ const res = await authFetch(`${API_BASE}/devices`);
     });
   </script>
 </head>
+
+<!-- Netlify Identity widget must load first -->
+<script src="https://identity.netlify.com/v1/netlify-identity-widget.js"></script>
+
+<script>
+  // 1) Define $ ONCE, globally, before anything uses it
+  const $ = (s) => document.querySelector(s);
+
+  // 2) Authenticated fetch helper
+  async function authFetch(url, opts = {}) {
+    const idw = window.netlifyIdentity;
+    const u = idw ? idw.currentUser() : null;
+    if (u) {
+      const token = await u.jwt();
+      opts.headers = { ...(opts.headers || {}), Authorization: `Bearer ${token}` };
+    }
+    return fetch(url, opts);
+  }
+  window.authFetch = authFetch;
+
+  // 3) Login UI wiring – wait for the widget to exist before using it
+  function refreshAuthUI() {
+    const idw = window.netlifyIdentity;
+    if (!idw) return;
+    const u = idw.currentUser();
+    const login  = $('#btnLogin');
+    const logout = $('#btnLogout');
+    const whoami = $('#whoami');
+    if (!login || !logout || !whoami) return;
+
+    login.style.display  = u ? 'none' : '';
+    logout.style.display = u ? '' : 'none';
+    whoami.textContent   = u ? `Signed in as ${u.email}` : '';
+  }
+
+  (function waitForIdentity(cb){
+    if (window.netlifyIdentity) return cb(window.netlifyIdentity);
+    setTimeout(() => waitForIdentity(cb), 50);
+  })(function(idw){
+    if (!idw.__nectiqWired) {
+      idw.on('init',  refreshAuthUI);
+      idw.on('login', () => { refreshAuthUI(); location.reload(); });
+      idw.on('logout', () => { refreshAuthUI(); location.reload(); });
+
+      // Buttons may not exist yet; also wire them after DOMContentLoaded below
+      const lb = $('#btnLogin');  if (lb) lb.addEventListener('click', () => idw.open('login'));
+      const lo = $('#btnLogout'); if (lo) lo.addEventListener('click', () => idw.logout());
+
+      idw.__nectiqWired = true;
+    }
+    idw.init();
+  });
+</script>
+
 
 <body>
   <header style="display:flex;justify-content:center;align-items:center;gap:16px;margin:16px 0;">
