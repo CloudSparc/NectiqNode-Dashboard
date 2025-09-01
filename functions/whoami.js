@@ -1,4 +1,4 @@
-// /netlify/functions/whoami.js
+// functions/whoami.js
 import { requireUser } from "./_auth.js";
 
 export const handler = async (event) => {
