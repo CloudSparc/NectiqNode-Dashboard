@@ -1,45 +1,24 @@
-// functions/devices.js
-import { requireUser } from './_auth.js';
-import { sql } from './utils/db.js';
+// /netlify/functions/devices.js
+import { requireUser } from "./_auth.js";
+import { getClient } from "./db.js";
 
-export async function handler(event) {
-  const debug = event.queryStringParameters?.debug === '1';
+export const handler = async (event) => {
+  const { user, error } = await requireUser(event);
+  if (error) return { statusCode: error.statusCode, body: JSON.stringify({ ok: false, error: error.message }) };
 
   try {
-    const user = await requireUser(event); // { id, email }
-    // NOTE: sql(...) returns an array of rows directly
-    const rows = await sql`
+    const db = await getClient();
+    const q = `
       SELECT d.device_id, d.name
       FROM device_users du
       JOIN devices d ON d.device_id = du.device_id
-      WHERE du.user_id = ${user.id}
-      ORDER BY d.name NULLS LAST, d.device_id
+      WHERE du.user_id = $1
+      ORDER BY d.name ASC
     `;
-
-    const body = { devices: rows };
-    if (debug) {
-      body.debug = {
-        user,
-        deviceCount: rows.length,
-        sample: rows.slice(0, 2),
-      };
-    }
-
-    return {
-      statusCode: 200,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    };
-  } catch (err) {
-    console.error('devices error:', err);
-    return {
-      statusCode: 502,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        error: 'Bad Gateway',
-        details: String(err?.message || err),
-        stack: process.env.NODE_ENV === 'production' ? undefined : err?.stack,
-      }),
-    };
+    const { rows } = await db.query(q, [user.id]);
+    return { statusCode: 200, body: JSON.stringify({ ok: true, devices: rows }) };
+  } catch (e) {
+    console.error(e);
+    return { statusCode: 500, body: JSON.stringify({ ok: false, error: "Server error" }) };
   }
-}
+};
