@@ -1,37 +1,22 @@
+// functions/whoami.js
 import { requireUser } from './_auth.js';
 
-export async function handler(event) {
-  const auth = event.headers?.authorization || event.headers?.Authorization || '';
-  const hasAuthHeader = /^Bearer\s+/i.test(auth);
-  const authHeaderPrefix = hasAuthHeader ? auth.slice(0, 10) : '';
+const json = (code, body) => ({
+  statusCode: code,
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify(body),
+});
 
-  const clientContextHasUser = !!event?.clientContext?.user;
+export const handler = async (event) => {
+  try {
+    const user = await requireUser(event);   // verifies the Bearer JWT
+    return json(200, { ok: true, user });
+  } catch (e) {
+    // If requireUser deliberately threw a Netlify-style response (e.g., 401),
+    // just return it so Netlify doesn’t crash the function.
+    if (e?.statusCode) return e;
 
-  const [user, err] = await requireUser(event);
-
-  if (err) {
-    // Surface the error for debugging while we’re wiring things up
-    return {
-      statusCode: err.statusCode || 401,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        hasAuthHeader,
-        authHeaderPrefix,
-        clientContextHasUser,
-        user: null,
-        note: 'Verification failed in requireUser',
-      }),
-    };
+    console.error('whoami error:', e);
+    return json(500, { ok: false, error: e?.message ?? 'server error' });
   }
-
-  return {
-    statusCode: 200,
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      hasAuthHeader,
-      authHeaderPrefix,
-      clientContextHasUser,
-      user, // { id, email }
-    }),
-  };
-}
+};
