@@ -84,24 +84,26 @@
 
   function fmtTs(ts) { return new Date(ts).toLocaleTimeString(); }
 
-  function newLineChart(ctx, label, { color, pointStyle }) {
+function newLineChart(ctx, label, { color, pointStyle }) {
   return new Chart(ctx, {
     type: 'line',
-    data: {
-      labels: [],
-      datasets: [{
-        label,
-        data: [],
-        tension: 0.25,
-        fill: false,
-        borderColor: color,
-        backgroundColor: color,   // legend marker color
-        borderWidth: 2,
-        pointStyle,               // legend marker shape
-        pointRadius: 0,           // no points on line
-        pointHoverRadius: 3
-      }]
-    },
+    data: { labels: [], datasets: [{
+      label,
+      data: [],
+      tension: 0.25,
+      fill: false,
+      borderColor: color,
+      backgroundColor: color,
+      borderWidth: 2,
+      pointStyle,
+      // show points if dataset is small; hide when it gets long
+      pointRadius: (ctx) => {
+        const n = ctx.chart?.data?.labels?.length || 0;
+        return n < 2 ? 5 : 0;        // visible dot for 0–1 samples
+      },
+      pointHoverRadius: 5,
+      spanGaps: true
+    }]},
     options: {
       responsive: true,
       animation: false,
@@ -117,19 +119,11 @@
             boxWidth: 16,
             boxHeight: 16,
             padding: 18,
-            font: {
-              family: 'monospace', // makes spaces equal width
-              size: 12
-            },
+            font: { family: 'monospace', size: 12 },
             generateLabels: (chart) => {
               const labels = Chart.defaults.plugins.legend.labels.generateLabels(chart);
-              // Find the longest label length
               const maxLen = Math.max(...labels.map(l => l.text.length));
-              // Pad all labels so markers align in a straight column
-              return labels.map(l => ({
-                ...l,
-                text: l.text.padEnd(maxLen, ' ')
-              }));
+              return labels.map(l => ({ ...l, text: l.text.padEnd(maxLen, ' ') }));
             }
           }
         }
@@ -139,15 +133,17 @@
 }
 
 
-  function pushPoint(chart, x, y, max = 200) {
-    chart.data.labels.push(x);
-    chart.data.datasets[0].data.push(y);
-    if (chart.data.labels.length > max) {
-      chart.data.labels.shift();
-      chart.data.datasets[0].data.shift();
-    }
-    chart.update();
+
+function pushPoint(chart, x, y, max = 200) {
+  chart.data.labels.push(x);
+  chart.data.datasets[0].data.push(y);
+  if (chart.data.labels.length > max) {
+    chart.data.labels.shift();
+    chart.data.datasets[0].data.shift();
   }
+  chart.update('none'); // update without animation
+}
+
 
   async function loadDevices() {
     const res = await fetch(`${API_BASE}/devices`);
