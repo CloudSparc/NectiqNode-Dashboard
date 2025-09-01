@@ -1,67 +1,48 @@
-import { query } from './utils/db.js';
-import { jwtVerify, createRemoteJWKSet, decodeJwt } from 'jose';
+// _auth.js (only the JWKS URL logic shown here)
+import jwt from 'jsonwebtoken';
 
-const isUUID = (s) =>
-  typeof s === 'string' &&
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(s);
-
-async function verifyIdentityJWTFromHeader(authorization) {
-  if (!authorization?.startsWith('Bearer ')) throw new Error('No bearer token');
-  const token = authorization.slice(7).trim();
-
-  // Read issuer from the token itself
-  const decoded = decodeJwt(token);
-  const iss = decoded?.iss;
-  if (!iss) throw new Error('Missing iss in token');
-
-  // Netlify Identity JWKS: {iss}/.well-known/jwks.json
-  const jwksUrl = new URL('/.well-known/jwks.json', iss);
-  const JWKS = createRemoteJWKSet(jwksUrl);
-
-  const { payload } = await jwtVerify(token, JWKS, {
-    issuer: iss,
-    audience: 'netlify',
-  });
-
-  return {
-    sub: payload.sub,
-    email: payload.email || '',
-    iss,
-  };
+async function fetchJson(url) {
+  const r = await fetch(url, { redirect: 'follow' });
+  if (!r.ok) throw new Error(`JWKS fetch failed ${r.status}`);
+  return r.json();
 }
 
-export async function requireUser(event) {
+async function getJwksForIssuer(iss) {
+  // Try the Identity path first, then fall back to the root path
+  const identityJwks = `${iss.replace(/\/$/, '')}/.well-known/jwks.json`;
+  const rootJwks     = `${iss.replace('/.netlify/identity', '').replace(/\/$/, '')}/.well-known/jwks.json`;
+
   try {
-    let id, email, iss;
-    const ctxUser = event?.clientContext?.user;
+    return await fetchJson(identityJwks);
+  } catch (_) {
+    return await fetchJson(rootJwks);
+  }
+}
 
-    if (ctxUser) {
-      id = ctxUser.sub || ctxUser.id || ctxUser.user_id;
-      email = ctxUser.email || '';
-    } else {
-      const auth = event.headers?.authorization || event.headers?.Authorization;
-      const r = await verifyIdentityJWTFromHeader(auth);
-      id = r.sub;
-      email = r.email;
-      iss = r.iss;
-      console.log('Verified via header; iss =', iss);
-    }
+export async function verifyNetlifyJwt(authorization) {
+  if (!authorization?.startsWith('Bearer ')) return { user: null, reason: 'no bearer' };
 
-    if (!id) return [null, { statusCode: 401, body: 'Unauthorized (no user id)' }];
+  const token = authorization.slice('Bearer '.length);
 
-    if (!isUUID(id)) {
-      return [null, { statusCode: 500, body: 'Server expects UUID user ids from Identity' }];
-    }
+  // Decode header/payload without verifying to get `iss` & `kid`
+  const [ , payloadB64, ] = token.split('.');
+  const payload = JSON.parse(Buffer.from(payloadB64.replace(/-/g,'+').replace(/_/g,'/'), 'base64').toString('utf8'));
 
-    await query`
-      INSERT INTO users (id, email)
-      VALUES (${id}::uuid, ${email})
-      ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email
-    `;
+  const iss = payload.iss;                    // e.g. https://<site>/.netlify/identity  OR  https://<site>
+  const jwks = await getJwksForIssuer(iss);
 
-    return [{ id, email }, null];
+  const header = JSON.parse(Buffer.from(token.split('.')[0].replace(/-/g,'+').replace(/_/g,'/'), 'base64').toString('utf8'));
+  const kid = header.kid;
+
+  const jwk = jwks.keys.find(k => k.kid === kid);
+  if (!jwk) return { user: null, reason: 'kid not found' };
+
+  // Build PEM from JWK (RSA) – minimal version:
+  const pub = jwkToPem(jwk); // use a helper like 'jwk-to-pem' or your own builder
+  try {
+    const verified = jwt.verify(token, pub, { algorithms: ['RS256'], issuer: iss.includes('/.netlify/identity') ? iss : `${iss}/.netlify/identity` });
+    return { user: { id: verified.sub, email: verified.email }, raw: verified };
   } catch (e) {
-    console.error('requireUser failed:', e);
-    return [null, { statusCode: 401, body: 'Unauthorized' }];
+    return { user: null, reason: e.message };
   }
 }
