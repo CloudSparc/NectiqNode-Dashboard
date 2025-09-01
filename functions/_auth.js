@@ -1,5 +1,6 @@
 // functions/_auth.js
-import { jwtVerify, createRemoteJWKSet } from 'jose';
+// Server-side auth helper for Netlify Identity using the Identity /user endpoint.
+// This avoids JWKS lookups and validates the token directly with Identity.
 
 const json = (code, body) => ({
   statusCode: code,
@@ -12,52 +13,61 @@ function getAuthHeader(event) {
   return h.authorization || h.Authorization || '';
 }
 
-function buildIssuer(event) {
+function buildIdentityBase(event) {
   const host = (event.headers?.host || '').trim();
   const scheme = host.startsWith('localhost') ? 'http' : 'https';
   return `${scheme}://${host}/.netlify/identity`;
 }
 
-// Netlify Identity's global JWKS location (works for prod, previews, dev)
-const GLOBAL_JWKS_URL = 'https://identity.netlify.com/.well-known/jwks.json';
-
+/**
+ * Validates the token by delegating to Netlify Identity itself.
+ * If valid, returns a normalized user object.
+ * If invalid, throws a 401 JSON response.
+ */
 export async function requireUser(event) {
   const authz = getAuthHeader(event);
-  if (!authz?.startsWith('Bearer ')) {
+  if (!authz || !authz.startsWith('Bearer ')) {
     throw json(401, { error: 'Unauthorized' });
   }
 
-  const token = authz.slice('Bearer '.length).trim();
-  const issuer = buildIssuer(event);
+  const identityBase = buildIdentityBase(event);
+  const url = `${identityBase}/user`;
 
+  let resp;
   try {
-    const JWKS = createRemoteJWKSet(new URL(GLOBAL_JWKS_URL));
-    const { payload } = await jwtVerify(token, JWKS, { issuer });
-
-    return {
-      id: payload.sub,
-      email: payload.email,
-      app_metadata: payload.app_metadata,
-      user_metadata: payload.user_metadata,
-    };
+    resp = await fetch(url, { headers: { Authorization: authz } });
   } catch (e) {
-    console.error('JWT verify failed:', {
-      message: e?.message,
-      name: e?.name,
-      issuer,
-      jwksUrl: GLOBAL_JWKS_URL,
-    });
+    console.error('Identity /user fetch failed:', e?.message || e);
+    throw json(502, { error: 'Identity unavailable' });
+  }
+
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    console.error('Identity /user non-200:', resp.status, text);
     throw json(401, { error: 'Unauthorized' });
   }
+
+  const raw = await resp.json();
+  // Normalize the shape to something simple your functions can use
+  return {
+    id: raw?.id || raw?.sub || null,
+    email: raw?.email || null,
+    app_metadata: raw?.app_metadata || {},
+    user_metadata: raw?.user_metadata || {},
+    _raw: raw,
+  };
 }
 
+/**
+ * Optional: a tiny function you can hit at /api/whoami for debugging.
+ */
 export const handler = async (event) => {
   try {
     const user = await requireUser(event);
     return json(200, { ok: true, user });
   } catch (e) {
     if (e?.statusCode) return e;
-    console.error('auth handler error:', e);
+    console.error('whoami error:', e);
     return json(500, { error: 'server error' });
   }
 };
