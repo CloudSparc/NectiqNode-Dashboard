@@ -1,46 +1,52 @@
 // functions/utils/db.js
-import pg from 'pg';
-const { Pool } = pg;
+import { Pool } from 'pg';
 
-const connectionString = process.env.DATABASE_URL || process.env.NEON_DATABASE_URL;
-if (!connectionString) {
+/**
+ * Get the connection string from Netlify/Neon envs.
+ * We support DATABASE_URL (your own), or Netlify's Neon integration vars.
+ */
+const CS =
+  process.env.DATABASE_URL ||
+  process.env.NETLIFY_DATABASE_URL ||
+  process.env.NETLIFY_DATABASE_URL_UNPOOLED;
+
+if (!CS) {
   throw new Error('Missing DATABASE_URL (Neon Postgres connection string)');
 }
 
-// Neon requires SSL in most cases
-const pool = new Pool({
-  connectionString,
-  ssl: { rejectUnauthorized: false }
+/**
+ * Neon requires SSL. rejectUnauthorized:false is safe for serverless clients.
+ */
+export const pool = new Pool({
+  connectionString: CS,
+  ssl: { rejectUnauthorized: false },
 });
 
-export async function query(q, params) {
-  const client = await pool.connect();
-  try {
-    const res = await client.query(q, params);
-    return res;
-  } finally {
-    client.release();
+/**
+ * sql` ... ${param} ... `
+ * A minimal tagged-template helper that parameterizes values as $1, $2, ...
+ * Returns rows (res.rows), which is what your functions expect.
+ */
+export async function sql(strings, ...values) {
+  // Build parameterized query text
+  let text = '';
+  for (let i = 0; i < strings.length; i++) {
+    text += strings[i];
+    if (i < values.length) text += `$${i + 1}`;
   }
+
+  const { rows } = await pool.query(text, values);
+  return rows;
 }
 
-// Ensure tables exist (run at cold start)
-export async function ensureSchema() {
-  await query(`
-    CREATE TABLE IF NOT EXISTS devices (
-      device_id TEXT PRIMARY KEY,
-      name TEXT,
-      created_at TIMESTAMPTZ DEFAULT NOW()
-    );
-  `);
-  await query(`
-    CREATE TABLE IF NOT EXISTS readings (
-      id BIGSERIAL PRIMARY KEY,
-      device_id TEXT NOT NULL REFERENCES devices(device_id) ON DELETE CASCADE,
-      ts TIMESTAMPTZ NOT NULL,
-      temp_c DOUBLE PRECISION,
-      humidity DOUBLE PRECISION,
-      sound_db DOUBLE PRECISION,
-      payload_json JSONB
-    );
-  `);
+/**
+ * If you ever need the full result object (rowCount, etc.) use exec instead.
+ */
+export async function exec(strings, ...values) {
+  let text = '';
+  for (let i = 0; i < strings.length; i++) {
+    text += strings[i];
+    if (i < values.length) text += `$${i + 1}`;
+  }
+  return pool.query(text, values);
 }
