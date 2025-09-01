@@ -131,119 +131,55 @@
     </div>
   </main>
 
-  <script>
-    // Wire login/logout after DOM is ready
-    document.addEventListener('DOMContentLoaded', () => {
-      const idw = window.netlifyIdentity;
-      const lb = $('#btnLogin');  if (lb && idw) lb.addEventListener('click', () => idw.open('login'));
-      const lo = $('#btnLogout'); if (lo && idw) lo.addEventListener('click', () => idw.logout());
+ <script>
+  document.addEventListener('DOMContentLoaded', () => {
+    const idw = window.netlifyIdentity;
 
-      const API_BASE = '/api';
-      let tempChart, humChart, soundChart;
-      let currentDevice;
+    // buttons
+    const lb = document.getElementById('btnLogin');  if (lb && idw) lb.addEventListener('click', () => idw.open('login'));
+    const lo = document.getElementById('btnLogout'); if (lo && idw) lo.addEventListener('click', () => idw.logout());
 
-      const COLOR_TEMP = '#E14E5D';
-      const COLOR_HUM  = '#4EA6E1';
-      const COLOR_SND  = '#E1D24E';
+    const API_BASE = '/api';
 
-      const fmtTs = (ts) => new Date(ts).toLocaleTimeString();
+    // define loadDevices globally so the Identity handlers can call it
+    window.loadDevices = async function loadDevices() {
+      const res = await authFetch(`${API_BASE}/devices`);
+      if (!res.ok) { console.warn('devices HTTP', res.status); return; }
+      const data = await res.json();
 
-      function newLineChart(ctx, label, { color, pointStyle }) {
-        return new Chart(ctx, {
-          type: 'line',
-          data: { labels: [], datasets: [{
-            label, data: [], tension: 0.25, fill: false,
-            borderColor: color, backgroundColor: color, borderWidth: 2,
-            pointStyle,
-            pointRadius: (ctx) => (ctx.chart?.data?.labels?.length || 0) < 2 ? 5 : 0,
-            pointHoverRadius: 5, spanGaps: true
-          }]},
-          options: {
-            responsive: true, animation: false,
-            scales: { x: { ticks: { color: '#9aa3b2' } }, y: { ticks: { color: '#9aa3b2' } } },
-            plugins: {
-              legend: {
-                labels: {
-                  color: '#e6e6e6', usePointStyle: true, boxWidth: 16, boxHeight: 16, padding: 18,
-                  font: { family: 'monospace', size: 12 },
-                  generateLabels: (chart) => {
-                    const labels = Chart.defaults.plugins.legend.labels.generateLabels(chart);
-                    const maxLen = Math.max(...labels.map(l => l.text.length));
-                    return labels.map(l => ({ ...l, text: l.text.padEnd(maxLen, ' ') }));
-                  }
-                }
-              }
-            }
-          }
-        });
-      }
-
-      function pushPoint(chart, x, y, max = 200) {
-        chart.data.labels.push(x);
-        chart.data.datasets[0].data.push(y);
-        if (chart.data.labels.length > max) {
-          chart.data.labels.shift();
-          chart.data.datasets[0].data.shift();
-        }
-        chart.update('none');
-      }
-
-      async function loadDevices() {
-        const res = await authFetch(`${API_BASE}/devices`);
-        if (!res.ok) { console.warn('devices HTTP', res.status); return; }
-        const data = await res.json();
-        const sel = $('#deviceSelect');
-        sel.innerHTML = '';
-        (data.devices || []).forEach(d => {
-          const opt = document.createElement('option');
-          opt.value = d.device_id;
-          opt.textContent = d.name || d.device_id;
-          sel.appendChild(opt);
-        });
-        if (data.devices?.length && !currentDevice) {
-          currentDevice = data.devices[0].device_id;
-          sel.value = currentDevice;
-          await loadHistory(currentDevice);
-        }
-        const selectedOption = sel.options[sel.selectedIndex];
-        $('#devicePreview').textContent = selectedOption ? `Selected device: ${selectedOption.textContent}` : '';
-      }
-
-      async function loadHistory(device_id) {
-        const res = await authFetch(`${API_BASE}/readings?device_id=${encodeURIComponent(device_id)}&limit=200`);
-        if (!res.ok) { console.warn('readings HTTP', res.status); return; }
-        const data = await res.json();
-
-        for (const c of [tempChart, humChart, soundChart]) {
-          c.data.labels = [];
-          c.data.datasets[0].data = [];
-          c.update();
-        }
-        (data.readings || []).forEach(r => {
-          if (r.temp_c   != null) pushPoint(tempChart,  fmtTs(r.ts), r.temp_c);
-          if (r.humidity != null) pushPoint(humChart,   fmtTs(r.ts), r.humidity);
-          if (r.sound_db != null) pushPoint(soundChart, fmtTs(r.ts), r.sound_db);
-        });
-        if (data.readings?.length) {
-          const last = data.readings[data.readings.length - 1];
-          $('#statTemp').textContent  = (last.temp_c   != null) ? last.temp_c.toFixed(1)  : '--';
-          $('#statHum').textContent   = (last.humidity != null) ? last.humidity.toFixed(1): '--';
-          $('#statSound').textContent = (last.sound_db != null) ? last.sound_db.toFixed(0): '--';
-        }
-      }
-
-      tempChart  = newLineChart($('#tempChart'),  'Temperature (°C)', { color: COLOR_TEMP, pointStyle: 'circle' });
-      humChart   = newLineChart($('#humChart'),   'Humidity (%)',     { color: COLOR_HUM,  pointStyle: 'circle' });
-      soundChart = newLineChart($('#soundChart'), 'Sound (dB)',       { color: COLOR_SND,  pointStyle: 'circle' });
-
-      $('#deviceSelect').addEventListener('change', (e) => {
-        currentDevice = e.target.value;
-        loadHistory(currentDevice);
+      const sel = document.getElementById('deviceSelect');
+      sel.innerHTML = '';
+      (data.devices || []).forEach(d => {
+        const opt = document.createElement('option');
+        opt.value = d.device_id;
+        opt.textContent = d.name || d.device_id;
+        sel.appendChild(opt);
       });
-      $('#refreshBtn').addEventListener('click', loadDevices);
 
-      loadDevices();
+      if (data.devices?.length) {
+        sel.value = data.devices[0].device_id;
+        await loadHistory(sel.value);
+        const selectedOption = sel.options[sel.selectedIndex];
+        document.getElementById('devicePreview').textContent =
+          selectedOption ? `Selected device: ${selectedOption.textContent}` : '';
+      }
+    };
+
+    async function loadHistory(device_id) {
+      const res = await authFetch(`${API_BASE}/readings?device_id=${encodeURIComponent(device_id)}&limit=200`);
+      if (!res.ok) { console.warn('readings HTTP', res.status); return; }
+      const data = await res.json();
+      // … update charts/stats …
+    }
+
+    document.getElementById('deviceSelect').addEventListener('change', (e) => {
+      loadHistory(e.target.value);
     });
-  </script>
+
+    // IMPORTANT: don't call loadDevices() here.
+    // Identity init handler will call it if a user is present.
+  });
+</script>
+
 </body>
 </html>
