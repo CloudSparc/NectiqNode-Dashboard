@@ -1,26 +1,29 @@
 // functions/devices.js
-import { query, ensureSchema } from './utils/db.js';
+import { requireUser, hasRole } from './_auth.js';
+import { sql } from './utils/db.js'; // your existing PG helper
 
-export default async (req, context) => {
-  if (req.method === 'OPTIONS') return new Response(null, { headers: cors() });
-  if (req.method !== 'GET') return json({ error: 'Method not allowed' }, 405);
+export default async (event) => {
+  const { user, error } = requireUser(event);
+  if (error) return error;
 
-  try {
-    await ensureSchema();
-    const { rows } = await query(`SELECT device_id, COALESCE(name, device_id) AS name FROM devices ORDER BY device_id`);
-    return json({ devices: rows });
-  } catch (e) {
-    return json({ error: e.message }, 500);
-  }
+  // upsert user (first seen)
+  await sql`insert into users (id, email)
+            values (${user.sub}, ${user.email})
+            on conflict (id) do update set email = excluded.email`;
+
+  const isAdmin = hasRole(user, 'admin');
+
+  const rows = isAdmin
+    ? await sql`select device_id, coalesce(name, device_id) as name
+                from devices order by name`
+    : await sql`
+        select d.device_id, coalesce(d.name, d.device_id) as name
+        from device_users du
+        join devices d on d.device_id = du.device_id
+        where du.user_id = ${user.sub}
+        order by name`;
+
+  return new Response(JSON.stringify({ devices: rows }), {
+    headers: { 'Content-Type': 'application/json' }
+  });
 };
-
-function cors() {
-  return {
-    'Access-Control-Allow-Origin': process.env.CORS_ORIGINS || '*',
-    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type'
-  };
-}
-function json(body, status=200) {
-  return new Response(JSON.stringify(body), { status, headers: { ...cors(), 'Content-Type': 'application/json' } });
-}

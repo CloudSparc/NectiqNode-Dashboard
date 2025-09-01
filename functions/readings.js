@@ -1,38 +1,37 @@
 // functions/readings.js
-import { query, ensureSchema } from './utils/db.js';
+import { requireUser, hasRole } from './_auth.js';
+import { sql } from './utils/db.js';
 
-export default async (req, context) => {
-  if (req.method === 'OPTIONS') return new Response(null, { headers: cors() });
-  if (req.method !== 'GET') return json({ error: 'Method not allowed' }, 405);
+export default async (event) => {
+  const { user, error } = requireUser(event);
+  if (error) return error;
 
-  const url = new URL(req.url);
+  const url = new URL(event.rawUrl || `http://x${event.path}?${event.queryStringParameters ?? ''}`);
   const device_id = url.searchParams.get('device_id');
-  const limit = parseInt(url.searchParams.get('limit') || '200', 10);
-  if (!device_id) return json({ error: 'device_id required' }, 400);
+  const limit = Math.min(Number(url.searchParams.get('limit') || 200), 1000);
 
-  try {
-    await ensureSchema();
-    const { rows } = await query(`
-      SELECT ts, temp_c, humidity, sound_db, payload_json
-      FROM readings
-      WHERE device_id = $1
-      ORDER BY ts DESC
-      LIMIT $2
-    `, [device_id, limit]);
-    rows.reverse();
-    return json({ device_id, readings: rows });
-  } catch (e) {
-    return json({ error: e.message }, 500);
+  if (!device_id)
+    return new Response(JSON.stringify({ error: 'device_id required' }), { status: 400 });
+
+  // authZ: admins can read any; others only their devices
+  const isAdmin = hasRole(user, 'admin');
+  if (!isAdmin) {
+    const allowed = await sql`
+      select 1 from device_users
+      where device_id = ${device_id} and user_id = ${user.sub} limit 1`;
+    if (allowed.length === 0) {
+      return new Response(JSON.stringify({ error: 'Forbidden' }), { status: 403 });
+    }
   }
-};
 
-function cors() {
-  return {
-    'Access-Control-Allow-Origin': process.env.CORS_ORIGINS || '*',
-    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type'
-  };
-}
-function json(body, status=200) {
-  return new Response(JSON.stringify(body), { status, headers: { ...cors(), 'Content-Type': 'application/json' } });
-}
+  const readings = await sql`
+    select ts, temp_c, humidity, sound_db
+    from readings
+    where device_id = ${device_id}
+    order by ts asc
+    limit ${limit}`;
+
+  return new Response(JSON.stringify({ readings }), {
+    headers: { 'Content-Type': 'application/json' }
+  });
+};
